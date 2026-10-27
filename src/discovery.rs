@@ -731,7 +731,7 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                         "trustor account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -740,18 +740,25 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                         }
                         match v1.ext {
                             AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: trustor.to_owned(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -786,7 +793,7 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                         "issuer account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -795,18 +802,25 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                         }
                         match v1.ext {
                             AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: asset.issuer.clone(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -1619,9 +1633,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -1727,9 +1742,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -1806,9 +1822,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -2542,9 +2559,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,

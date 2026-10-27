@@ -8,9 +8,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
-    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits,
-    LiquidityPoolConstantProductParameters, LiquidityPoolParameters, OperationResultCode, PoolId,
-    ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
+    AccountId, AllowTrustResultCode, AlphaNum4, AlphaNum12, Asset, AssetCode4, AssetCode12, Hash,
+    HashIdPreimageRevokeId, Limits, LiquidityPoolConstantProductParameters,
+    LiquidityPoolParameters, OperationResultCode, PoolId, PublicKey, ReadXdr, SequenceNumber,
+    SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, Uint256, WriteXdr,
 };
 
 pub mod discovery;
@@ -25,6 +26,8 @@ pub use evidence::{
 
 pub const AUTHORIZED_FLAG: u32 = 1;
 pub const AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG: u32 = 2;
+pub const TRUSTLINE_CLAWBACK_ENABLED_FLAG: u32 = 4;
+pub const CLAIMABLE_BALANCE_FLAG_CLAWBACK_ENABLED: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transition {
@@ -124,16 +127,85 @@ pub fn derive_constant_product_pool_id(
     Ok(Hash(Sha256::digest(encoded).into()))
 }
 
+/// Constructs an authoritative Stellar XDR Asset from code and issuer strkey.
+pub fn make_xdr_asset(code: &str, issuer_strkey: &str) -> Result<stellar_xdr::Asset, String> {
+    if code == "XLM" && (issuer_strkey == "native" || issuer_strkey.is_empty()) {
+        return Ok(stellar_xdr::Asset::Native);
+    }
+    let issuer_bytes = decode_account_id(issuer_strkey)?;
+    let issuer = AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(issuer_bytes)));
+    let bytes = code.as_bytes();
+    if bytes.is_empty() {
+        return Err("asset code cannot be empty".to_owned());
+    }
+    if bytes.len() <= 4 {
+        let mut code_arr = [0u8; 4];
+        code_arr[..bytes.len()].copy_from_slice(bytes);
+        Ok(stellar_xdr::Asset::CreditAlphanum4(AlphaNum4 {
+            asset_code: AssetCode4(code_arr),
+            issuer,
+        }))
+    } else if bytes.len() <= 12 {
+        let mut code_arr = [0u8; 12];
+        code_arr[..bytes.len()].copy_from_slice(bytes);
+        Ok(stellar_xdr::Asset::CreditAlphanum12(AlphaNum12 {
+            asset_code: AssetCode12(code_arr),
+            issuer,
+        }))
+    } else {
+        Err(format!("asset code exceeds 12 characters: {}", code))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationSpec {
     pub operation: String,
     pub source_account: String,
+    #[serde(default)]
+    pub tx_source_account: Option<String>,
     pub trustor: String,
-    pub sequence: u64,
-    pub operation_index: u32,
+    #[serde(default)]
+    pub sequence: Option<u64>,
+    #[serde(default)]
+    pub operation_index: Option<u32>,
     pub asset: CreditAsset,
     pub before_flags: u32,
     pub after_flags: u32,
+}
+
+impl OperationSpec {
+    pub fn new(
+        operation: impl Into<String>,
+        source_account: impl Into<String>,
+        trustor: impl Into<String>,
+        asset: CreditAsset,
+        before_flags: u32,
+        after_flags: u32,
+    ) -> Self {
+        Self {
+            operation: operation.into(),
+            source_account: source_account.into(),
+            tx_source_account: None,
+            trustor: trustor.into(),
+            sequence: None,
+            operation_index: None,
+            asset,
+            before_flags,
+            after_flags,
+        }
+    }
+
+    pub fn with_context(
+        mut self,
+        tx_source_account: Option<String>,
+        sequence: Option<u64>,
+        operation_index: Option<u32>,
+    ) -> Self {
+        self.tx_source_account = tx_source_account;
+        self.sequence = sequence;
+        self.operation_index = operation_index;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +234,8 @@ pub struct CreditTrustlineState {
 pub struct AccountState {
     pub id: String,
     pub balance_stroops: u64,
+    #[serde(default)]
+    pub buying_liabilities_stroops: u64,
     pub selling_liabilities_stroops: u64,
     pub subentries: u32,
     pub num_sponsoring: u32,
@@ -258,6 +332,10 @@ pub struct ClaimableBalanceForecast {
     pub asset: String,
     pub amount_stroops: u64,
     pub sponsor: String,
+    #[serde(default)]
+    pub claimable_balance_id: Option<String>,
+    #[serde(default)]
+    pub clawback_flag_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -409,6 +487,11 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
     if account(snapshot, &operation.source_account).is_none() {
         errors.push("operation source account is missing".to_owned());
     }
+    if let Some(tx_src) = &operation.tx_source_account
+        && account(snapshot, tx_src).is_none()
+    {
+        errors.push(format!("transaction source account {} is missing", tx_src));
+    }
     if operation.asset.issuer != operation.source_account {
         errors.push("operation source is not the asset issuer".to_owned());
     }
@@ -511,6 +594,34 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
                 entry.id, seq, snapshot.ledger_sequence
             ));
         }
+        if entry.balance_stroops < entry.selling_liabilities_stroops {
+            errors.push(format!(
+                "account {} selling liabilities exceed balance",
+                entry.id
+            ));
+        }
+        if u128::from(entry.balance_stroops) + u128::from(entry.buying_liabilities_stroops)
+            > u128::from(i64::MAX as u64)
+        {
+            errors.push(format!(
+                "account {} balance plus buying liabilities exceeds int64 limit",
+                entry.id
+            ));
+        }
+        if u128::from(entry.num_sponsored)
+            > 2 + u128::from(entry.subentries) + u128::from(entry.num_sponsoring)
+        {
+            errors.push(format!(
+                "account {} num_sponsored violates invariant: exceeds subentries + num_sponsoring + 2",
+                entry.id
+            ));
+        }
+        if u128::from(entry.num_sponsoring) + u128::from(entry.subentries) > u128::from(u32::MAX) {
+            errors.push(format!(
+                "account {} sponsorship accounting exceeds UINT32_MAX",
+                entry.id
+            ));
+        }
     }
     let mut trustline_keys = std::collections::BTreeSet::new();
     for tl in &snapshot.trustlines {
@@ -528,6 +639,14 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
                 "trustline for owner {} and asset {}:{} lastModifiedLedgerSeq {} is newer than snapshot ledger {}",
                 tl.owner, tl.asset.code, tl.asset.issuer, seq, snapshot.ledger_sequence
             ));
+        }
+        if account(snapshot, &tl.owner).is_none() {
+            errors.push(format!("trustline owner {} is missing", tl.owner));
+        }
+        if let Some(sponsor) = &tl.sponsor
+            && account(snapshot, sponsor).is_none()
+        {
+            errors.push(format!("trustline sponsor {} is missing", sponsor));
         }
     }
     let mut pool_ids = std::collections::BTreeSet::new();
@@ -594,19 +713,52 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
             ));
         }
     }
+    if !snapshot.sponsorship_handoffs.is_empty() && operation.operation_index.is_none() {
+        errors.push(
+            "operation index is missing but required to evaluate sponsorship handoffs".to_owned(),
+        );
+    }
+    let mut handoff_targets = std::collections::BTreeSet::new();
     for handoff in &snapshot.sponsorship_handoffs {
-        if account(snapshot, &handoff.sponsored_account).is_none()
-            || account(snapshot, &handoff.replacement_sponsor).is_none()
-        {
-            errors.push("sponsorship handoff references a missing account".to_owned());
+        if !handoff_targets.insert(&handoff.sponsored_account) {
+            errors.push(format!(
+                "conflicting sponsorship handoffs for account {}",
+                handoff.sponsored_account
+            ));
         }
-        if handoff.begin_operation_index >= handoff.revoke_operation_index
-            || handoff.revoke_operation_index != operation.operation_index
-            || handoff
-                .end_operation_index
-                .is_some_and(|end| end <= handoff.revoke_operation_index)
+        if account(snapshot, &handoff.sponsored_account).is_none() {
+            errors.push(format!(
+                "sponsorship handoff references missing sponsored account {}",
+                handoff.sponsored_account
+            ));
+        }
+        if account(snapshot, &handoff.replacement_sponsor).is_none() {
+            errors.push(format!(
+                "sponsorship handoff references missing replacement sponsor {}",
+                handoff.replacement_sponsor
+            ));
+        }
+        if handoff.end_operation_index.is_none() {
+            errors
+                .push("sponsorship handoff is unclosed: end_operation_index is missing".to_owned());
+        }
+        if handoff.begin_operation_index >= handoff.revoke_operation_index {
+            errors
+                .push("sponsorship handoff begin index must be less than revoke index".to_owned());
+        }
+        if let Some(end) = handoff.end_operation_index
+            && end <= handoff.revoke_operation_index
         {
-            errors.push("sponsorship handoff operation order is invalid".to_owned());
+            errors
+                .push("sponsorship handoff end index must be greater than revoke index".to_owned());
+        }
+        if let Some(op_idx) = operation.operation_index
+            && handoff.revoke_operation_index != op_idx
+        {
+            errors.push(
+                "sponsorship handoff revoke_operation_index does not match operation index"
+                    .to_owned(),
+            );
         }
     }
     errors
@@ -674,14 +826,33 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
 
     let mut redemptions = Vec::new();
     let mut deltas = std::collections::BTreeMap::<String, AccountDelta>::new();
-    let mut errors = Vec::new();
-    for pool in snapshot.pool_share_trustlines.iter().filter(|pool| {
-        pool.owner == operation.trustor
-            && ((pool.asset_a == operation.asset.code
-                && pool.asset_a_issuer == operation.asset.issuer)
-                || (pool.asset_b == operation.asset.code
-                    && pool.asset_b_issuer == operation.asset.issuer))
-    }) {
+    let mut eval_errors = Vec::new();
+    let mut eval_warnings = Vec::new();
+
+    let mut affected_pools: Vec<_> = snapshot
+        .pool_share_trustlines
+        .iter()
+        .filter(|pool| {
+            pool.owner == operation.trustor
+                && ((pool.asset_a == operation.asset.code
+                    && pool.asset_a_issuer == operation.asset.issuer)
+                    || (pool.asset_b == operation.asset.code
+                        && pool.asset_b_issuer == operation.asset.issuer))
+        })
+        .collect();
+    // Deterministic ordering by pool_id matching Stellar Core's std::sort on poolTLKeys
+    affected_pools.sort_by(|a, b| a.pool_id.cmp(&b.pool_id));
+
+    let can_derive_cb_id = operation.tx_source_account.is_some()
+        && operation.sequence.is_some()
+        && operation.operation_index.is_some();
+    if !can_derive_cb_id && !affected_pools.is_empty() {
+        eval_warnings.push(
+            "claimable balance ID derivation skipped: operation context (tx_source_account, sequence, or operation_index) is unavailable".to_owned(),
+        );
+    }
+
+    for pool in affected_pools {
         let amount_a = match forecast_amount(
             pool.owner_pool_shares,
             pool.reserve_a,
@@ -689,7 +860,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         ) {
             Ok(amount) => amount,
             Err(error) => {
-                errors.push(format!("{}: {}", pool.pool_id, error));
+                eval_errors.push(format!("{}: {}", pool.pool_id, error));
                 continue;
             }
         };
@@ -700,46 +871,89 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         ) {
             Ok(amount) => amount,
             Err(error) => {
-                errors.push(format!("{}: {}", pool.pool_id, error));
+                eval_errors.push(format!("{}: {}", pool.pool_id, error));
                 continue;
             }
         };
+
         let base_sponsor = pool.sponsor.clone().unwrap_or_else(|| pool.owner.clone());
-        let sponsor = snapshot
+        let active_replacement_sponsor = snapshot
             .sponsorship_handoffs
             .iter()
             .find(|handoff| handoff.sponsored_account == base_sponsor)
-            .map(|handoff| handoff.replacement_sponsor.clone())
-            .unwrap_or(base_sponsor.clone());
-        if pool.sponsor.is_none()
-            && snapshot
-                .sponsorship_handoffs
-                .iter()
-                .any(|handoff| handoff.sponsored_account == pool.owner)
-        {
-            errors.push(format!(
-                "pool {} has unsupported active sponsorship context for an unsponsored trustline",
-                pool.pool_id
-            ));
-            continue;
-        }
+            .map(|handoff| handoff.replacement_sponsor.clone());
+        let sponsor = active_replacement_sponsor
+            .clone()
+            .unwrap_or_else(|| base_sponsor.clone());
+
         let mut claimable_balances = Vec::new();
-        if amount_a > 0 && pool.asset_a_issuer != pool.owner {
-            claimable_balances.push(ClaimableBalanceForecast {
-                pool_id: pool.pool_id.clone(),
-                asset: pool.asset_a.clone(),
-                amount_stroops: amount_a,
-                sponsor: sponsor.clone(),
-            });
+
+        let constituent_assets = [
+            (&pool.asset_a, &pool.asset_a_issuer, amount_a),
+            (&pool.asset_b, &pool.asset_b_issuer, amount_b),
+        ];
+
+        for (asset_code, asset_issuer, amount) in constituent_assets {
+            if amount > 0 && *asset_issuer != pool.owner {
+                // Determine clawback flag from constituent trustline
+                let clawback_flag_enabled = if *asset_code == operation.asset.code
+                    && *asset_issuer == operation.asset.issuer
+                {
+                    (operation.before_flags & TRUSTLINE_CLAWBACK_ENABLED_FLAG) != 0
+                } else {
+                    snapshot
+                        .trustlines
+                        .iter()
+                        .find(|tl| {
+                            tl.owner == pool.owner
+                                && tl.asset.code == *asset_code
+                                && tl.asset.issuer == *asset_issuer
+                        })
+                        .is_some_and(|tl| (tl.flags & TRUSTLINE_CLAWBACK_ENABLED_FLAG) != 0)
+                };
+
+                let claimable_balance_id = if can_derive_cb_id {
+                    let tx_src = operation.tx_source_account.as_ref().unwrap();
+                    let seq = operation.sequence.unwrap();
+                    let op_idx = operation.operation_index.unwrap();
+
+                    match (
+                        decode_account_id(tx_src),
+                        discovery::decode_pool_id(&pool.pool_id),
+                        make_xdr_asset(asset_code, asset_issuer),
+                    ) {
+                        (Ok(src_bytes), Ok(p_id), Ok(xdr_asset)) => {
+                            let src_acc_id =
+                                AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(src_bytes)));
+                            match derive_pool_revoke_claimable_balance_id(
+                                src_acc_id,
+                                SequenceNumber(seq as i64),
+                                op_idx,
+                                p_id.0,
+                                xdr_asset,
+                            ) {
+                                Ok(h) => Some(hex::encode(h.0)),
+                                Err(_) => None,
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                claimable_balances.push(ClaimableBalanceForecast {
+                    pool_id: pool.pool_id.clone(),
+                    asset: (*asset_code).clone(),
+                    amount_stroops: amount,
+                    sponsor: sponsor.clone(),
+                    claimable_balance_id,
+                    clawback_flag_enabled,
+                });
+            }
         }
-        if amount_b > 0 && pool.asset_b_issuer != pool.owner {
-            claimable_balances.push(ClaimableBalanceForecast {
-                pool_id: pool.pool_id.clone(),
-                asset: pool.asset_b.clone(),
-                amount_stroops: amount_b,
-                sponsor: sponsor.clone(),
-            });
-        }
+
+        let num_cb = claimable_balances.len() as i64;
         let owner_delta = deltas.entry(pool.owner.clone()).or_insert(AccountDelta {
             id: pool.owner.clone(),
             balance_stroops: 0,
@@ -750,6 +964,11 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         owner_delta.subentries -= 2;
         if pool.sponsor.is_some() {
             owner_delta.num_sponsored -= 2;
+        } else if active_replacement_sponsor.is_none() {
+            owner_delta.num_sponsoring += num_cb;
+        }
+
+        if pool.sponsor.is_some() {
             let pool_sponsor_delta = deltas.entry(base_sponsor.clone()).or_insert(AccountDelta {
                 id: base_sponsor.clone(),
                 balance_stroops: 0,
@@ -758,19 +977,22 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                 num_sponsored: 0,
             });
             pool_sponsor_delta.num_sponsoring -= 2;
-        } else {
-            owner_delta.num_sponsoring += claimable_balances.len() as i64;
+            if active_replacement_sponsor.is_none() {
+                pool_sponsor_delta.num_sponsoring += num_cb;
+            }
         }
-        if sponsor != base_sponsor || pool.sponsor.is_some() {
-            let replacement_delta = deltas.entry(sponsor.clone()).or_insert(AccountDelta {
-                id: sponsor.clone(),
+
+        if let Some(replacement) = active_replacement_sponsor {
+            let replacement_delta = deltas.entry(replacement.clone()).or_insert(AccountDelta {
+                id: replacement,
                 balance_stroops: 0,
                 subentries: 0,
                 num_sponsoring: 0,
                 num_sponsored: 0,
             });
-            replacement_delta.num_sponsoring += claimable_balances.len() as i64;
+            replacement_delta.num_sponsoring += num_cb;
         }
+
         redemptions.push(PoolRedemptionForecast {
             pool_id: pool.pool_id.clone(),
             owner: pool.owner.clone(),
@@ -780,7 +1002,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         });
     }
 
-    if redemptions.is_empty() && errors.is_empty() {
+    if redemptions.is_empty() && eval_errors.is_empty() {
         let mut warnings = vec![
             "no affected pool-share trustlines were found; discovery is not independently verified"
                 .to_owned(),
@@ -788,87 +1010,131 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         if let Some(w) = coverage_warning {
             warnings.push(w);
         }
+        if let Some(w) = sponsorship_warning {
+            warnings.push(w);
+        }
+        warnings.extend(eval_warnings);
         return Report {
             classification: Classification::UnverifiedForecast,
             transition,
             pool_redemptions: redemptions,
             account_deltas: deltas.into_values().collect(),
             warnings,
-            errors,
+            errors: eval_errors,
         };
     }
 
+    // Evaluate deltas and reserves
+    let mut invalid_counter_errors = Vec::new();
+    let mut blocked_errors = Vec::new();
+
     for delta in deltas.values() {
         let Some(before) = account(snapshot, &delta.id) else {
-            errors.push(format!("account {} disappeared from snapshot", delta.id));
+            invalid_counter_errors.push(format!("account {} disappeared from snapshot", delta.id));
             continue;
         };
-        let Some(subentries) = (i64::from(before.subentries) + delta.subentries)
-            .try_into()
-            .ok()
-        else {
-            errors.push(format!("subentry count overflow for account {}", delta.id));
-            continue;
-        };
-        let Some(num_sponsoring) = (i64::from(before.num_sponsoring) + delta.num_sponsoring)
-            .try_into()
-            .ok()
-        else {
-            errors.push(format!(
-                "sponsoring count overflow for account {}",
-                delta.id
-            ));
-            continue;
-        };
-        let Some(num_sponsored) = (i64::from(before.num_sponsored) + delta.num_sponsored)
-            .try_into()
-            .ok()
-        else {
-            errors.push(format!("sponsored count overflow for account {}", delta.id));
-            continue;
-        };
+
+        let subentries_res: Result<u32, _> =
+            (i64::from(before.subentries) + delta.subentries).try_into();
+        let sponsoring_res: Result<u32, _> =
+            (i64::from(before.num_sponsoring) + delta.num_sponsoring).try_into();
+        let sponsored_res: Result<u32, _> =
+            (i64::from(before.num_sponsored) + delta.num_sponsored).try_into();
+
+        let (subentries, num_sponsoring, num_sponsored) =
+            match (subentries_res, sponsoring_res, sponsored_res) {
+                (Ok(sub), Ok(sping), Ok(sped)) => (sub, sping, sped),
+                _ => {
+                    invalid_counter_errors.push(format!(
+                        "counter arithmetic underflow or overflow for account {}",
+                        delta.id
+                    ));
+                    continue;
+                }
+            };
+
         let after = AccountState {
             id: before.id.clone(),
             balance_stroops: before.balance_stroops,
+            buying_liabilities_stroops: before.buying_liabilities_stroops,
             selling_liabilities_stroops: before.selling_liabilities_stroops,
             subentries,
             num_sponsoring,
             num_sponsored,
             last_modified_ledger_seq: before.last_modified_ledger_seq,
         };
+
+        // Protocol invariant: num_sponsored <= 2 + subentries + num_sponsoring
+        if u128::from(after.num_sponsored)
+            > 2 + u128::from(after.subentries) + u128::from(after.num_sponsoring)
+        {
+            invalid_counter_errors.push(format!(
+                "account {} num_sponsored violates invariant: exceeds subentries + num_sponsoring + 2",
+                after.id
+            ));
+            continue;
+        }
+
+        // Stellar Core opTOO_MANY_SPONSORING
         if u128::from(after.num_sponsoring) + u128::from(after.subentries) > u128::from(u32::MAX) {
-            errors.push(format!(
+            blocked_errors.push(format!(
                 "{} exceeds the UINT32_MAX sponsorship accounting limit",
                 after.id
             ));
+            continue;
         }
-        match snapshot
-            .base_reserve_stroops
-            .ok_or_else(|| "base reserve is unavailable".to_owned())
-            .and_then(|base_reserve| minimum_balance(&after, base_reserve))
-            .and_then(|minimum| {
-                minimum
-                    .checked_add(u128::from(after.selling_liabilities_stroops))
-                    .ok_or_else(|| {
-                        format!("reserve and liabilities overflow for account {}", after.id)
-                    })
-            }) {
-            Ok(minimum) if u128::from(after.balance_stroops) >= minimum => {}
-            Ok(minimum) => errors.push(format!(
+
+        // Reserve check
+        let base_reserve = match snapshot.base_reserve_stroops {
+            Some(r) => r,
+            None => {
+                invalid_counter_errors.push("base reserve is unavailable".to_owned());
+                continue;
+            }
+        };
+
+        let min_balance = match minimum_balance(&after, base_reserve) {
+            Ok(m) => m,
+            Err(e) => {
+                invalid_counter_errors.push(e);
+                continue;
+            }
+        };
+
+        let total_required =
+            match min_balance.checked_add(u128::from(after.selling_liabilities_stroops)) {
+                Some(t) => t,
+                None => {
+                    invalid_counter_errors.push(format!(
+                        "reserve and liabilities overflow for account {}",
+                        after.id
+                    ));
+                    continue;
+                }
+            };
+
+        if u128::from(after.balance_stroops) < total_required {
+            blocked_errors.push(format!(
                 "{} would be below reserve: balance {}, minimum {}",
-                after.id, after.balance_stroops, minimum
-            )),
-            Err(error) => errors.push(error),
+                after.id, after.balance_stroops, total_required
+            ));
         }
     }
 
-    let classification = if errors.iter().any(|error| error.contains("unsupported")) {
+    let mut all_errors = eval_errors;
+    let classification = if !invalid_counter_errors.is_empty() {
+        all_errors.extend(invalid_counter_errors);
+        all_errors.extend(blocked_errors);
         Classification::Inconclusive
-    } else if errors.is_empty() {
-        Classification::UnverifiedForecast
-    } else {
+    } else if !blocked_errors.is_empty() {
+        all_errors.extend(blocked_errors);
         Classification::SupportedBlocked
+    } else if !all_errors.is_empty() {
+        Classification::Inconclusive
+    } else {
+        Classification::UnverifiedForecast
     };
+
     let mut warnings = vec![
         "forecast is internally consistent but discovery is not independently verified".to_owned(),
     ];
@@ -878,13 +1144,15 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     if let Some(w) = sponsorship_warning {
         warnings.push(w);
     }
+    warnings.extend(eval_warnings);
+
     Report {
         classification,
         transition,
         pool_redemptions: redemptions,
         account_deltas: deltas.into_values().collect(),
         warnings,
-        errors,
+        errors: all_errors,
     }
 }
 
@@ -946,6 +1214,7 @@ mod tests {
                 AccountState {
                     id: "issuer".to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -955,6 +1224,7 @@ mod tests {
                 AccountState {
                     id: "holder".to_owned(),
                     balance_stroops: 20_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 2,
                     num_sponsoring: 0,
@@ -964,6 +1234,7 @@ mod tests {
                 AccountState {
                     id: "sponsor".to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: if sponsor.is_some() { 2 } else { 0 },
@@ -973,6 +1244,7 @@ mod tests {
                 AccountState {
                     id: "replacement".to_owned(),
                     balance_stroops: 0,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -1013,9 +1285,10 @@ mod tests {
         OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "issuer".to_owned(),
+            tx_source_account: None,
             trustor: "holder".to_owned(),
-            sequence: 42,
-            operation_index: 0,
+            sequence: Some(42),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "USD".to_owned(),
                 issuer: "issuer".to_owned(),
@@ -1116,7 +1389,7 @@ mod tests {
             end_operation_index: Some(2),
         });
         let mut op = revoke();
-        op.operation_index = 1;
+        op.operation_index = Some(1);
         let report = evaluate(&op, &sandwich);
         assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert!(
@@ -1161,6 +1434,7 @@ mod tests {
         state.accounts.push(AccountState {
             id: "other-holder".to_owned(),
             balance_stroops: 20_000_000,
+            buying_liabilities_stroops: 0,
             selling_liabilities_stroops: 0,
             subentries: 2,
             num_sponsoring: 0,
@@ -1261,7 +1535,7 @@ mod tests {
             end_operation_index: Some(2),
         });
         let mut op = revoke();
-        op.operation_index = 1;
+        op.operation_index = Some(1);
         let report = evaluate(&op, &state);
         assert_eq!(report.classification, Classification::SupportedBlocked);
         assert_ne!(report.classification, Classification::UnverifiedForecast);
@@ -1274,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn unsponsored_active_sponsorship_context_is_not_guessed() {
+    fn unsponsored_active_sponsorship_context_blocks_on_low_reserve() {
         let mut state = snapshot(None, true);
         state.sponsorship_handoffs.push(SponsorshipHandoff {
             sponsored_account: "holder".to_owned(),
@@ -1284,14 +1558,14 @@ mod tests {
             end_operation_index: Some(2),
         });
         let mut op = revoke();
-        op.operation_index = 1;
+        op.operation_index = Some(1);
         let report = evaluate(&op, &state);
-        assert_eq!(report.classification, Classification::Inconclusive);
+        assert_eq!(report.classification, Classification::SupportedBlocked);
         assert!(
             report
                 .errors
                 .iter()
-                .any(|error| error.contains("unsupported active sponsorship"))
+                .any(|error| error.contains("replacement") && error.contains("below reserve"))
         );
     }
 
@@ -1417,9 +1691,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1459,6 +1736,21 @@ mod tests {
         assert_eq!(pool2_redemption.withdrawn_b_stroops, 4980000000);
 
         assert!(
+            pool1_redemption
+                .claimable_balances
+                .iter()
+                .all(|cb| cb.claimable_balance_id.is_some()),
+            "claimable balance IDs must be derived when context is present"
+        );
+        assert!(
+            pool2_redemption
+                .claimable_balances
+                .iter()
+                .all(|cb| cb.claimable_balance_id.is_some()),
+            "claimable balance IDs must be derived when context is present"
+        );
+
+        assert!(
             report
                 .warnings
                 .iter()
@@ -1487,9 +1779,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1520,9 +1815,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1555,9 +1853,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1587,9 +1888,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1629,9 +1933,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1664,9 +1971,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1702,9 +2012,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1735,9 +2048,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
@@ -1772,9 +2088,12 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            tx_source_account: Some(
+                "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            ),
             trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: CreditAsset {
                 code: "FLUTTER".to_owned(),
                 issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),

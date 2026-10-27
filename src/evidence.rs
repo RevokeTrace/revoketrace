@@ -508,7 +508,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         "trustor account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     stellar_xdr::AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -517,18 +517,25 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         }
                         match v1.ext {
                             stellar_xdr::AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: trustor.to_owned(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -563,7 +570,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         "issuer account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     stellar_xdr::AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -572,18 +579,25 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         }
                         match v1.ext {
                             stellar_xdr::AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: asset.issuer.clone(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -1414,9 +1428,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset,
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -1456,6 +1471,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -1465,6 +1481,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2037,9 +2054,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -2088,6 +2106,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2097,6 +2116,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2151,9 +2171,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -2281,6 +2302,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2290,6 +2312,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2340,6 +2363,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2349,6 +2373,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2792,6 +2817,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2801,6 +2827,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2851,6 +2878,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2860,6 +2888,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
