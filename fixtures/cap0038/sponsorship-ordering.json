@@ -1,0 +1,44 @@
+{
+  "schema": "cap0038-sponsorship-ordering-v1",
+  "source": "CAP-0038 sponsorship cases and stellar-core TransactionUtils.cpp",
+  "cases": [
+    {
+      "id": "unsponsored",
+      "operations": ["SetTrustLineFlags(revoke)"],
+      "pool_share_sponsor": null,
+      "claimable_balance_sponsor": "trustor",
+      "expected": "SUPPORTED_SAFE"
+    },
+    {
+      "id": "sponsored",
+      "operations": ["SetTrustLineFlags(revoke)"],
+      "pool_share_sponsor": "sponsor",
+      "claimable_balance_sponsor": "sponsor",
+      "expected": "SUPPORTED_SAFE"
+    },
+    {
+      "id": "sponsorship-sandwich",
+      "operations": [
+        "BeginSponsoringFutureReserves(sponsored_id=sponsor, source=replacement)",
+        "SetTrustLineFlags(revoke, source=issuer)",
+        "EndSponsoringFutureReserves(source=sponsor)"
+      ],
+      "pool_share_sponsor": "sponsor",
+      "active_replacement_sponsor": "replacement",
+      "claimable_balance_sponsor": "replacement",
+      "expected": "SUPPORTED_SAFE only if replacement reserve/counter checks pass"
+    },
+    {
+      "id": "sponsorship-sandwich-low-reserve",
+      "operations": [
+        "BeginSponsoringFutureReserves(sponsored_id=sponsor, source=replacement)",
+        "SetTrustLineFlags(revoke, source=issuer)",
+        "EndSponsoringFutureReserves(source=sponsor)"
+      ],
+      "pool_share_sponsor": "sponsor",
+      "active_replacement_sponsor": "replacement",
+      "replacement_balance_stroops": 0,
+      "expected": "SUPPORTED_BLOCKED / LOW_RESERVE"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema": "cap0038-pool-revoke-id-v1",
+  "network": "Test SDF Network ; September 2015",
+  "protocol_baseline": 28,
+  "source_account_ed25519_byte": 7,
+  "sequence": 42,
+  "operation_index": 0,
+  "pool_id_byte": 9,
+  "asset_code": "TEST",
+  "asset_issuer_ed25519_byte": 7,
+  "xdr_preimage_hex": "000000000707070707070707070707070707070707070707070707070707070707070707000000000000002a0000000009090909090909090909090909090909090909090909090909090909090909090000000154455354000000000707070707070707070707070707070707070707070707070707070707070707",
+  "sha256_claimable_balance_id": "0a76bfde6dafd3b0f171ec064a56242f7cbc846bef3bc50296b87714a39e1553",
+  "independent_verification": "printf %s <xdr_preimage_hex> | xxd -r -p | sha256sum"
+}

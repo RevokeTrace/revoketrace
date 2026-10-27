@@ -6,7 +6,11 @@
 //! be established.
 
 use serde::{Deserialize, Serialize};
-use stellar_xdr::{Limits, ReadXdr, SetTrustLineFlagsOp};
+use sha2::{Digest, Sha256};
+use stellar_xdr::{
+    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits, OperationResultCode,
+    PoolId, ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
+};
 
 pub const AUTHORIZED_FLAG: u32 = 1;
 pub const AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG: u32 = 2;
@@ -24,6 +28,68 @@ pub enum Classification {
     SupportedBlocked,
     Inconclusive,
     Unsupported,
+}
+
+/// Maps an observed protocol result into the evaluator's conservative outcome.
+/// These are protocol result mappings, not a claim that a forecast will succeed.
+pub fn map_allow_trust_result(code: AllowTrustResultCode) -> Classification {
+    match code {
+        AllowTrustResultCode::Success => Classification::SupportedSafe,
+        AllowTrustResultCode::LowReserve
+        | AllowTrustResultCode::Malformed
+        | AllowTrustResultCode::NoTrustLine
+        | AllowTrustResultCode::TrustNotRequired
+        | AllowTrustResultCode::CantRevoke
+        | AllowTrustResultCode::SelfNotAllowed => Classification::SupportedBlocked,
+    }
+}
+
+pub fn map_set_trust_line_flags_result(code: SetTrustLineFlagsResultCode) -> Classification {
+    match code {
+        SetTrustLineFlagsResultCode::Success => Classification::SupportedSafe,
+        SetTrustLineFlagsResultCode::Malformed
+        | SetTrustLineFlagsResultCode::NoTrustLine
+        | SetTrustLineFlagsResultCode::CantRevoke
+        | SetTrustLineFlagsResultCode::InvalidState
+        | SetTrustLineFlagsResultCode::LowReserve => Classification::SupportedBlocked,
+    }
+}
+
+pub fn map_operation_result(code: OperationResultCode) -> Classification {
+    match code {
+        OperationResultCode::OpNotSupported => Classification::Unsupported,
+        // opINNER is only a wrapper; without the nested AllowTrust or
+        // SetTrustLineFlags result, the evaluator must not claim success.
+        OperationResultCode::OpInner => Classification::Inconclusive,
+        OperationResultCode::OpBadAuth
+        | OperationResultCode::OpNoAccount
+        | OperationResultCode::OpTooManySubentries
+        | OperationResultCode::OpExceededWorkLimit
+        | OperationResultCode::OpTooManySponsoring => Classification::SupportedBlocked,
+    }
+}
+
+/// Derives the CAP-0038 pool-revocation claimable-balance ID.
+///
+/// The preimage is the XDR encoding of HashIDPreimageRevokeId, which is then
+/// SHA-256 hashed. The operation source, transaction sequence, operation index,
+/// pool ID, and output asset are all identity-bearing inputs.
+pub fn derive_pool_revoke_claimable_balance_id(
+    source_account: stellar_xdr::AccountId,
+    sequence: SequenceNumber,
+    operation_index: u32,
+    pool_id: Hash,
+    asset: Asset,
+) -> Result<Hash, stellar_xdr::Error> {
+    let preimage = HashIdPreimageRevokeId {
+        source_account,
+        seq_num: sequence,
+        op_num: operation_index,
+        liquidity_pool_id: PoolId(pool_id),
+        asset,
+    };
+    let encoded = preimage.to_xdr(Limits::none())?;
+    Ok(Hash(Sha256::digest(encoded).into()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -455,7 +521,9 @@ pub fn decode_flags(bytes: &[u8]) -> Result<u32, stellar_xdr::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stellar_xdr::{AccountId, AlphaNum4, Asset, AssetCode4, PublicKey, Uint256, WriteXdr};
+    use stellar_xdr::{
+        AccountId, AlphaNum4, Asset, AssetCode4, PublicKey, Uint256, WriteXdr,
+    };
 
     fn snapshot(sponsor: Option<&str>, discovery_complete: bool) -> Snapshot {
         Snapshot {
@@ -582,6 +650,45 @@ mod tests {
     }
 
     #[test]
+    fn zero_or_one_claimable_balance_is_not_collapsed_to_two() {
+        let mut one = snapshot(None, true);
+        one.pool_share_trustlines[0].reserve_b = 0;
+        let report = evaluate(&revoke(), &one);
+        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.pool_redemptions[0].claimable_balances.len(), 1);
+
+        let mut zero = one;
+        zero.pool_share_trustlines[0].reserve_a = 0;
+        let report = evaluate(&revoke(), &zero);
+        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert!(report.pool_redemptions[0].claimable_balances.is_empty());
+    }
+
+    #[test]
+    fn sponsored_pool_share_uses_sponsor_and_sponsorship_handoff_uses_replacement() {
+        let sponsored = snapshot(Some("sponsor"), true);
+        let report = evaluate(&revoke(), &sponsored);
+        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert!(report.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .all(|balance| balance.sponsor == "sponsor"));
+
+        let mut sandwich = sponsored;
+        sandwich.accounts[3].balance_stroops = 100_000_000;
+        sandwich.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "sponsor".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+        });
+        let report = evaluate(&revoke(), &sandwich);
+        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert!(report.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .all(|balance| balance.sponsor == "replacement"));
+    }
+
+    #[test]
     fn incomplete_discovery_is_inconclusive() {
         let report = evaluate(&revoke(), &snapshot(None, false));
         assert_eq!(report.classification, Classification::Inconclusive);
@@ -611,5 +718,58 @@ mod tests {
         let decoded: Snapshot = serde_json::from_str(&encoded).expect("deserialize fixture");
         assert_eq!(decoded.ledger_sequence, 100);
         assert_eq!(decoded.pool_share_trustlines.len(), 1);
+    }
+
+    #[test]
+    fn authoritative_result_codes_map_conservatively() {
+        assert_eq!(
+            map_allow_trust_result(AllowTrustResultCode::Success),
+            Classification::SupportedSafe
+        );
+        assert_eq!(
+            map_allow_trust_result(AllowTrustResultCode::LowReserve),
+            Classification::SupportedBlocked
+        );
+        assert_eq!(
+            map_set_trust_line_flags_result(SetTrustLineFlagsResultCode::InvalidState),
+            Classification::SupportedBlocked
+        );
+        assert_eq!(
+            map_set_trust_line_flags_result(SetTrustLineFlagsResultCode::LowReserve),
+            Classification::SupportedBlocked
+        );
+        assert_eq!(
+            map_operation_result(OperationResultCode::OpTooManySponsoring),
+            Classification::SupportedBlocked
+        );
+        assert_eq!(
+            map_operation_result(OperationResultCode::OpNotSupported),
+            Classification::Unsupported
+        );
+        assert_eq!(
+            map_operation_result(OperationResultCode::OpInner),
+            Classification::Inconclusive
+        );
+    }
+
+    #[test]
+    fn derives_cap0038_pool_revoke_id_from_xdr_preimage() {
+        let source = AccountId::from(PublicKey::PublicKeyTypeEd25519(Uint256([7; 32])));
+        let asset = Asset::CreditAlphanum4(AlphaNum4 {
+            asset_code: AssetCode4(*b"TEST"),
+            issuer: source.clone(),
+        });
+        let id = derive_pool_revoke_claimable_balance_id(
+            source,
+            SequenceNumber(42),
+            0,
+            Hash([9; 32]),
+            asset,
+        )
+        .expect("derive claimable balance ID");
+        assert_eq!(
+            hex::encode(id.0),
+            "0a76bfde6dafd3b0f171ec064a56242f7cbc846bef3bc50296b87714a39e1553"
+        );
     }
 }
