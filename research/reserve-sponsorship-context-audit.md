@@ -311,7 +311,7 @@ The following table records the protocol verification for each accounting rule i
 - No signing, broadcasting, key storage, indexing, or external paid infrastructure.
 
 ### 6.2 Remaining Blockers & Next Phase
-- Phase 4B implements exact reserve, sponsorship, and operation-context modeling, backed by 109 unit tests and verified against official Stellar Core source code.
+- Phase 4B implements exact reserve, sponsorship, and operation-context modeling, backed by 117 unit tests and verified against official Stellar Core source code.
 - Phase 4C (CLI and reporting interface) cannot begin until Phase 4B has been reviewed and merged into `main`.
 
 ---
@@ -326,10 +326,12 @@ Following independent review of initial Phase 4B implementation, five critical c
    - Active sponsorship sandwiches introduce replacement sponsors via `createEntryWithPossibleSponsorship`, which strictly require balance solvency (`balance >= min_balance + selling_liabilities`) and counter capacity (`num_sponsoring + subentries + new_cb <= UINT32_MAX`).
    - If evidence cannot prove whether reserve checking applies, the forecast fails closed as `Inconclusive`, not `SupportedBlocked`.
 
-2. **Constituent Asset Clawback Fail-Closed Verification:**
+2. **Constituent Asset Clawback Fail-Closed Verification & Identity Integrity:**
    - Replaced silent fallback `is_some_and` with strict existence, ownership, and flag verification for all constituent credit assets.
-   - Missing, stale (`last_modified > ledger_seq`), or contradictory constituent trustlines fail closed as `Inconclusive`.
-   - `AuthoritativeEvidenceAdapter` was extended to query all constituent credit trustlines via atomic batch RPC `getLedgerEntries`, maintaining single-ledger consistency and the 200-key limit.
+   - Validates decoded `TrustLineEntry` asset against exact requested asset code and issuer; rejects unexpected asset, wrong owner, malformed XDR, or contradictory ledger entries.
+   - Validates Horizon balance asset identities (asset_type, code length, StrKey decoding) to prevent corrupt Horizon data from being accepted as trustworthy evidence.
+   - Missing, stale (`last_modified > ledger_seq`), or contradictory constituent trustlines fail closed as `Inconclusive`. Evaluator never treats missing or mismatched evidence as proof that clawback is disabled.
+   - `AuthoritativeEvidenceAdapter` queries all constituent credit trustlines via atomic batch RPC `getLedgerEntries`, maintaining single-ledger consistency and the 200-key limit.
 
 3. **Claimable-Balance ID Context & XDR Discriminant Validation:**
    - Sequence number is range-checked (`seq > 0 && seq <= i64::MAX as u64`) to prevent silent overflow or wrapping.

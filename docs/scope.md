@@ -48,7 +48,7 @@ Phase 4B implements exact reserve, sponsorship, and operation-context accounting
 
 ## Phase 4B status
 
-Phase 4B implements and tests exact reserve accounting, deterministic sponsorship transitions, constituent clawback flag propagation, and operation-context reconstruction, backed by 109 unit tests and comprehensive testing across all target failure modes.
+Phase 4B implements and tests exact reserve accounting, deterministic sponsorship transitions, constituent clawback flag propagation, and operation-context reconstruction, backed by 117 unit tests and comprehensive testing across all target failure modes.
 
 Safety boundaries remain strictly enforced:
 - `SUPPORTED_SAFE` is unreachable without an independent authoritative capture verifier.

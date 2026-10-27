@@ -3149,4 +3149,84 @@ mod tests {
         // Must NOT be SupportedBlocked because discovery evidence is incomplete
         assert_eq!(report_b.classification, Classification::Inconclusive);
     }
+
+    #[test]
+    fn test_evaluator_never_assumes_clawback_disabled_when_constituent_evidence_mismatched_or_missing()
+     {
+        let op = revoke();
+
+        // 1. Missing constituent trustline
+        let mut snap_missing = snapshot(None, true);
+        snap_missing.trustlines.retain(|tl| tl.asset.code != "EUR");
+        let report_missing = evaluate(&op, &snap_missing);
+        assert_eq!(report_missing.classification, Classification::Inconclusive);
+        assert!(
+            report_missing
+                .errors
+                .iter()
+                .any(|e| e.contains("missing constituent credit trustline"))
+        );
+
+        // 2. Correct owner, incorrect asset code ("GBP" instead of "EUR")
+        let mut snap_wrong_code = snapshot(None, true);
+        let eur_tl = snap_wrong_code
+            .trustlines
+            .iter_mut()
+            .find(|tl| tl.asset.code == "EUR")
+            .unwrap();
+        eur_tl.asset.code = "GBP".to_owned();
+        let report_wrong_code = evaluate(&op, &snap_wrong_code);
+        assert_eq!(
+            report_wrong_code.classification,
+            Classification::Inconclusive
+        );
+        assert!(
+            report_wrong_code
+                .errors
+                .iter()
+                .any(|e| e.contains("missing constituent credit trustline"))
+        );
+
+        // 3. Correct asset code, incorrect issuer ("wrong-issuer" instead of "other-issuer")
+        let mut snap_wrong_issuer = snapshot(None, true);
+        let eur_tl = snap_wrong_issuer
+            .trustlines
+            .iter_mut()
+            .find(|tl| tl.asset.code == "EUR")
+            .unwrap();
+        eur_tl.asset.issuer = "wrong-issuer".to_owned();
+        let report_wrong_issuer = evaluate(&op, &snap_wrong_issuer);
+        assert_eq!(
+            report_wrong_issuer.classification,
+            Classification::Inconclusive
+        );
+        assert!(
+            report_wrong_issuer
+                .errors
+                .iter()
+                .any(|e| e.contains("missing constituent credit trustline"))
+        );
+
+        // 4. Incorrect trustline owner ("other-holder" instead of "holder")
+        let mut snap_wrong_owner = snapshot(None, true);
+        let eur_tl = snap_wrong_owner
+            .trustlines
+            .iter_mut()
+            .find(|tl| tl.asset.code == "EUR")
+            .unwrap();
+        eur_tl.owner = "other-holder".to_owned();
+        let report_wrong_owner = evaluate(&op, &snap_wrong_owner);
+        assert_eq!(
+            report_wrong_owner.classification,
+            Classification::Inconclusive
+        );
+        assert!(
+            report_wrong_owner
+                .errors
+                .iter()
+                .any(|e| e.contains("missing constituent credit trustline"))
+        );
+
+        // In NONE of these cases did the evaluator assume clawback was disabled (UnverifiedForecast with clawback_flag_enabled: false)
+    }
 }
