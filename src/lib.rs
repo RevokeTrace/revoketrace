@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
-    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits, OperationResultCode, PoolId,
+    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits,
+    LiquidityPoolConstantProductParameters, LiquidityPoolParameters, OperationResultCode, PoolId,
     ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
 };
 
@@ -96,6 +97,23 @@ pub fn derive_pool_revoke_claimable_balance_id(
     Ok(Hash(Sha256::digest(encoded).into()))
 }
 
+/// Derives the canonical CAP-0038 constant-product pool ID from constituent assets and fee.
+pub fn derive_constant_product_pool_id(
+    asset_a: &Asset,
+    asset_b: &Asset,
+    fee_bps: i32,
+) -> Result<Hash, stellar_xdr::Error> {
+    let params = LiquidityPoolParameters::LiquidityPoolConstantProduct(
+        LiquidityPoolConstantProductParameters {
+            asset_a: asset_a.clone(),
+            asset_b: asset_b.clone(),
+            fee: fee_bps,
+        },
+    );
+    let encoded = params.to_xdr(Limits::none())?;
+    Ok(Hash(Sha256::digest(encoded).into()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationSpec {
     pub operation: String,
@@ -124,6 +142,8 @@ pub struct CreditTrustlineState {
     pub asset: CreditAsset,
     pub flags: u32,
     pub sponsor: Option<String>,
+    #[serde(default)]
+    pub liquidity_pool_use_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +154,8 @@ pub struct AccountState {
     pub subentries: u32,
     pub num_sponsoring: u32,
     pub num_sponsored: u32,
+    #[serde(default)]
+    pub last_modified_ledger_seq: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +171,8 @@ pub struct PoolShareState {
     pub total_pool_shares: u64,
     pub owner_pool_shares: u64,
     pub sponsor: Option<String>,
+    #[serde(default)]
+    pub last_modified_ledger_seq: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,12 +190,24 @@ pub enum DiscoverySource {
     LedgerCapture { endpoint: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DiscoveryCoverage {
+    #[default]
+    Unproven,
+    AuthoritativeReconciled {
+        liquidity_pool_use_count: u32,
+        verified_pool_count: u32,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryProof {
     pub source: DiscoverySource,
     pub target_ledger_sequence: u32,
     pub pool_ids: Vec<String>,
     pub manifest_sha256: String,
+    #[serde(default)]
+    pub coverage: DiscoveryCoverage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,6 +369,55 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         ));
     } else if matching_trustlines[0].flags != operation.before_flags {
         errors.push("operation before flags do not match target trustline".to_owned());
+    } else {
+        let target_tl = matching_trustlines[0];
+        let affected_pool_share_count = snapshot
+            .pool_share_trustlines
+            .iter()
+            .filter(|pool| {
+                pool.owner == operation.trustor
+                    && ((pool.asset_a == operation.asset.code
+                        && pool.asset_a_issuer == operation.asset.issuer)
+                        || (pool.asset_b == operation.asset.code
+                            && pool.asset_b_issuer == operation.asset.issuer))
+            })
+            .count() as u32;
+
+        if let Some(expected_use_count) = target_tl.liquidity_pool_use_count
+            && affected_pool_share_count != expected_use_count
+        {
+            errors.push(format!(
+                "target credit trustline liquidityPoolUseCount ({}) does not match discovered affected pools ({})",
+                expected_use_count, affected_pool_share_count
+            ));
+        }
+
+        match &snapshot.discovery.coverage {
+            DiscoveryCoverage::AuthoritativeReconciled {
+                liquidity_pool_use_count,
+                verified_pool_count,
+            } => {
+                if *liquidity_pool_use_count != *verified_pool_count {
+                    errors.push(format!(
+                        "discovery coverage reconciliation mismatch: liquidityPoolUseCount {} != verified_pool_count {}",
+                        liquidity_pool_use_count, verified_pool_count
+                    ));
+                }
+                if *verified_pool_count != affected_pool_share_count {
+                    errors.push(format!(
+                        "discovery coverage verified_pool_count {} does not match snapshot affected pools {}",
+                        verified_pool_count, affected_pool_share_count
+                    ));
+                }
+                if target_tl.liquidity_pool_use_count != Some(*liquidity_pool_use_count) {
+                    errors.push(
+                        "discovery coverage count differs from target credit trustline count"
+                            .to_owned(),
+                    );
+                }
+            }
+            DiscoveryCoverage::Unproven => {}
+        }
     }
     for (label, flags) in [
         ("before", operation.before_flags),
@@ -355,11 +440,27 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         if !account_ids.insert(&entry.id) {
             errors.push(format!("duplicate account {}", entry.id));
         }
+        if let Some(seq) = entry.last_modified_ledger_seq
+            && seq > snapshot.ledger_sequence
+        {
+            errors.push(format!(
+                "account {} lastModifiedLedgerSeq {} is newer than snapshot ledger {}",
+                entry.id, seq, snapshot.ledger_sequence
+            ));
+        }
     }
     let mut pool_ids = std::collections::BTreeSet::new();
     for pool in &snapshot.pool_share_trustlines {
         if !pool_ids.insert(&pool.pool_id) {
             errors.push(format!("duplicate pool trustline {}", pool.pool_id));
+        }
+        if let Some(seq) = pool.last_modified_ledger_seq
+            && seq > snapshot.ledger_sequence
+        {
+            errors.push(format!(
+                "pool {} lastModifiedLedgerSeq {} is newer than snapshot ledger {}",
+                pool.pool_id, seq, snapshot.ledger_sequence
+            ));
         }
         if account(snapshot, &pool.owner).is_none() {
             errors.push(format!("pool owner {} is missing", pool.owner));
@@ -452,16 +553,33 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         };
     }
 
+    let is_coverage_proven = match &snapshot.discovery.coverage {
+        DiscoveryCoverage::AuthoritativeReconciled { .. } => true,
+        DiscoveryCoverage::Unproven => false,
+    };
+    let coverage_warning = if !is_coverage_proven {
+        Some(
+            "forecast discovery coverage is unproven; liquidityPoolUseCount not verified on-chain"
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+
     if transition != Transition::ForcedPoolRedemption {
+        let mut warnings = vec![
+            "forecast is internally consistent but discovery is not independently verified"
+                .to_owned(),
+        ];
+        if let Some(w) = coverage_warning {
+            warnings.push(w);
+        }
         return Report {
             classification: Classification::UnverifiedForecast,
             transition,
             pool_redemptions: Vec::new(),
             account_deltas: Vec::new(),
-            warnings: vec![
-                "forecast is internally consistent but discovery is not independently verified"
-                    .to_owned(),
-            ],
+            warnings,
             errors: Vec::new(),
         };
     }
@@ -575,15 +693,19 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     }
 
     if redemptions.is_empty() && errors.is_empty() {
+        let mut warnings = vec![
+            "no affected pool-share trustlines were found; discovery is not independently verified"
+                .to_owned(),
+        ];
+        if let Some(w) = coverage_warning {
+            warnings.push(w);
+        }
         return Report {
             classification: Classification::UnverifiedForecast,
             transition,
             pool_redemptions: redemptions,
             account_deltas: deltas.into_values().collect(),
-            warnings: vec![
-                "no affected pool-share trustlines were found; discovery is not independently verified"
-                    .to_owned(),
-            ],
+            warnings,
             errors,
         };
     }
@@ -624,6 +746,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
             subentries,
             num_sponsoring,
             num_sponsored,
+            last_modified_ledger_seq: before.last_modified_ledger_seq,
         };
         if u128::from(after.num_sponsoring) + u128::from(after.subentries) > u128::from(u32::MAX) {
             errors.push(format!(
@@ -652,15 +775,18 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     } else {
         Classification::SupportedBlocked
     };
+    let mut warnings = vec![
+        "forecast is internally consistent but discovery is not independently verified".to_owned(),
+    ];
+    if let Some(w) = coverage_warning {
+        warnings.push(w);
+    }
     Report {
         classification,
         transition,
         pool_redemptions: redemptions,
         account_deltas: deltas.into_values().collect(),
-        warnings: vec![
-            "forecast is internally consistent but discovery is not independently verified"
-                .to_owned(),
-        ],
+        warnings,
         errors,
     }
 }
@@ -713,6 +839,7 @@ mod tests {
                 } else {
                     "invalid".to_owned()
                 },
+                coverage: DiscoveryCoverage::Unproven,
             },
             base_reserve_stroops: 5_000_000,
             accounts: vec![
@@ -723,6 +850,7 @@ mod tests {
                     subentries: 0,
                     num_sponsoring: 0,
                     num_sponsored: 0,
+                    last_modified_ledger_seq: None,
                 },
                 AccountState {
                     id: "holder".to_owned(),
@@ -731,6 +859,7 @@ mod tests {
                     subentries: 2,
                     num_sponsoring: 0,
                     num_sponsored: if sponsor.is_some() { 2 } else { 0 },
+                    last_modified_ledger_seq: None,
                 },
                 AccountState {
                     id: "sponsor".to_owned(),
@@ -739,6 +868,7 @@ mod tests {
                     subentries: 0,
                     num_sponsoring: if sponsor.is_some() { 2 } else { 0 },
                     num_sponsored: 0,
+                    last_modified_ledger_seq: None,
                 },
                 AccountState {
                     id: "replacement".to_owned(),
@@ -747,6 +877,7 @@ mod tests {
                     subentries: 0,
                     num_sponsoring: 0,
                     num_sponsored: 0,
+                    last_modified_ledger_seq: None,
                 },
             ],
             trustlines: vec![CreditTrustlineState {
@@ -757,6 +888,7 @@ mod tests {
                 },
                 flags: AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG,
                 sponsor: None,
+                liquidity_pool_use_count: None,
             }],
             pool_share_trustlines: vec![PoolShareState {
                 pool_id: "pool-1".to_owned(),
@@ -770,6 +902,7 @@ mod tests {
                 total_pool_shares: 1_000,
                 owner_pool_shares: 125,
                 sponsor: sponsor.map(str::to_owned),
+                last_modified_ledger_seq: None,
             }],
             sponsorship_handoffs: Vec::new(),
         }
@@ -908,6 +1041,7 @@ mod tests {
             total_pool_shares: 1_000,
             owner_pool_shares: 125,
             sponsor: None,
+            last_modified_ledger_seq: None,
         });
         state.pool_share_trustlines.push(PoolShareState {
             pool_id: "pool-3".to_owned(),
@@ -921,6 +1055,7 @@ mod tests {
             total_pool_shares: 1_000,
             owner_pool_shares: 125,
             sponsor: None,
+            last_modified_ledger_seq: None,
         });
         state.accounts.push(AccountState {
             id: "other-holder".to_owned(),
@@ -929,6 +1064,7 @@ mod tests {
             subentries: 2,
             num_sponsoring: 0,
             num_sponsored: 0,
+            last_modified_ledger_seq: None,
         });
         state.discovery.pool_ids.push("pool-2".to_owned());
         state.discovery.pool_ids.push("pool-3".to_owned());
@@ -1130,6 +1266,246 @@ mod tests {
         assert_eq!(
             hex::encode(id.0),
             "0a76bfde6dafd3b0f171ec064a56242f7cbc846bef3bc50296b87714a39e1553"
+        );
+    }
+
+    #[test]
+    fn derives_canonical_constant_product_pool_ids() {
+        // Pool 1: SDK:GA5Q3FB... and FLUTTER:GBYEWT4...
+        let sdk_issuer_hex = "3b0d94347e15c9ec301a17598cadd4c4b5b423c002c2e637993415ddfd166ee8";
+        let mut sdk_code = [0u8; 4];
+        sdk_code[..3].copy_from_slice(b"SDK");
+        let mut sdk_issuer_bytes = [0u8; 32];
+        hex::decode_to_slice(sdk_issuer_hex, &mut sdk_issuer_bytes).unwrap();
+        let sdk = Asset::CreditAlphanum4(AlphaNum4 {
+            asset_code: AssetCode4(sdk_code),
+            issuer: AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(sdk_issuer_bytes))),
+        });
+
+        let flutter_issuer_hex = "704b4f98b83b04bd23c149257a7adb926a172399c053d32d2d72bb31c93710e9";
+        let mut flutter_code = [0u8; 12];
+        flutter_code[..7].copy_from_slice(b"FLUTTER");
+        let mut flutter_issuer_bytes = [0u8; 32];
+        hex::decode_to_slice(flutter_issuer_hex, &mut flutter_issuer_bytes).unwrap();
+        let flutter = Asset::CreditAlphanum12(stellar_xdr::AlphaNum12 {
+            asset_code: stellar_xdr::AssetCode12(flutter_code),
+            issuer: AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(
+                flutter_issuer_bytes,
+            ))),
+        });
+
+        let pool1_id = derive_constant_product_pool_id(&sdk, &flutter, 30).unwrap();
+        assert_eq!(
+            hex::encode(pool1_id.0),
+            "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46"
+        );
+
+        // Pool 2: Native and FLUTTER:GBYEWT4...
+        let pool2_id = derive_constant_product_pool_id(&Asset::Native, &flutter, 30).unwrap();
+        assert_eq!(
+            hex::encode(pool2_id.0),
+            "078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c"
+        );
+    }
+
+    #[test]
+    fn evaluates_live_testnet_discovery_fixture() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.transition, Transition::ForcedPoolRedemption);
+        assert!(
+            report.errors.is_empty(),
+            "unexpected errors: {:?}",
+            report.errors
+        );
+        assert_eq!(report.pool_redemptions.len(), 2);
+
+        let pool1_redemption = report
+            .pool_redemptions
+            .iter()
+            .find(|r| {
+                r.pool_id == "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46"
+            })
+            .expect("pool 1 redemption");
+        assert_eq!(pool1_redemption.withdrawn_a_stroops, 700000000);
+        assert_eq!(pool1_redemption.withdrawn_b_stroops, 514506217);
+
+        let pool2_redemption = report
+            .pool_redemptions
+            .iter()
+            .find(|r| {
+                r.pool_id == "078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c"
+            })
+            .expect("pool 2 redemption");
+        assert_eq!(pool2_redemption.withdrawn_a_stroops, 4980000000);
+        assert_eq!(pool2_redemption.withdrawn_b_stroops, 4980000000);
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("not independently verified")),
+            "missing unverified warning"
+        );
+    }
+
+    #[test]
+    fn incomplete_pool_discovery_fails_closed_as_inconclusive() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Omit pool 2 from pool_share_trustlines and manifest
+        snapshot.pool_share_trustlines.retain(|p| {
+            p.pool_id == "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46"
+        });
+        snapshot.discovery.pool_ids =
+            vec!["00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned()];
+        snapshot.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &snapshot.network_passphrase,
+            snapshot.ledger_sequence,
+            &snapshot.discovery.pool_ids,
+        );
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "liquidityPoolUseCount (2) does not match discovered affected pools (1)"
+            )),
+            "expected count mismatch error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn mixed_ledger_sequence_fails_closed_as_inconclusive() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // One pool has a newer ledger sequence than the target ledger
+        snapshot.pool_share_trustlines[0].last_modified_ledger_seq = Some(5413925);
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("newer than snapshot ledger")),
+            "expected ledger sequence error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn wrong_issuer_in_pool_fails_reconciliation() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Mutate pool 2 asset_b_issuer to a wrong issuer
+        snapshot.pool_share_trustlines[1].asset_b_issuer =
+            "GA5Q3FBUPYK4T3BQDILVTDFN2TCLLNBDYABMFZRXTE2BLXP5CZXOQFWM".to_owned();
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "liquidityPoolUseCount (2) does not match discovered affected pools (1)"
+            )),
+            "expected affected pool count mismatch due to wrong issuer, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn unproven_coverage_emits_explicit_warning() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        snapshot.discovery.coverage = DiscoveryCoverage::Unproven;
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("coverage is unproven; liquidityPoolUseCount not verified")),
+            "expected unproven coverage warning, got: {:?}",
+            report.warnings
         );
     }
 }
