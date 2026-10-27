@@ -43,7 +43,7 @@ The spike therefore records the actual pool-share sponsor, requires explicit Beg
 
 ## Mandatory refusal conditions
 
-Return `INCONCLUSIVE`, never `SUPPORTED_SAFE`, when any of the following holds:
+Return `INCONCLUSIVE`, never `UNVERIFIED_FORECAST` or `SUPPORTED_SAFE`, when any of the following holds:
 
 - enumeration is based only on explicit RPC lookups or a non-auditable account view;
 - the source cannot prove it covered all pool-share trustlines for the account and revoked asset;
@@ -53,4 +53,4 @@ Return `INCONCLUSIVE`, never `SUPPORTED_SAFE`, when any of the following holds:
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository has no capture adapter and therefore makes no live complete-discovery claim. The evaluator now requires a manifest whose pool IDs exactly match the supplied pool-share entries, whose ledger target matches the snapshot, and whose SHA-256 digest matches the canonical manifest material. Synthetic fixtures may use `SyntheticFixture`; they are deterministic test evidence only. A caller cannot obtain a safe result by setting a standalone `discovery_complete` boolean.
+The current repository has no capture adapter and therefore makes no live complete-discovery claim. The evaluator requires a manifest whose pool IDs exactly match the supplied pool-share entries, whose ledger target matches the snapshot, and whose SHA-256 digest matches the canonical manifest material. These checks establish internal consistency only; they cannot prove that an omitted pool-share entry was ever discovered. Synthetic fixtures and caller-supplied `LedgerCapture` metadata therefore produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. A future trusted capture adapter would need independently auditable enumeration coverage, entry hashes, ledger anchoring, and reconciliation before any verified-safe outcome could exist.

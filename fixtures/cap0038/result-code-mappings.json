@@ -8,9 +8,9 @@
     "https://github.com/stellar/rs-stellar-xdr/blob/v28.0.1/src/generated/operation_result_code.rs"
   ],
   "mappings": [
-    {"operation": "AllowTrust", "code": "ALLOW_TRUST_SUCCESS", "numeric": 0, "outcome": "SUPPORTED_SAFE"},
+    {"operation": "AllowTrust", "code": "ALLOW_TRUST_SUCCESS", "numeric": 0, "outcome": "UNVERIFIED_FORECAST"},
     {"operation": "AllowTrust", "code": "ALLOW_TRUST_LOW_RESERVE", "numeric": -6, "outcome": "SUPPORTED_BLOCKED"},
-    {"operation": "SetTrustLineFlags", "code": "SET_TRUST_LINE_FLAGS_SUCCESS", "numeric": 0, "outcome": "SUPPORTED_SAFE"},
+    {"operation": "SetTrustLineFlags", "code": "SET_TRUST_LINE_FLAGS_SUCCESS", "numeric": 0, "outcome": "UNVERIFIED_FORECAST"},
     {"operation": "SetTrustLineFlags", "code": "SET_TRUST_LINE_FLAGS_LOW_RESERVE", "numeric": -5, "outcome": "SUPPORTED_BLOCKED"},
     {"operation": "outer", "code": "opTOO_MANY_SPONSORING", "numeric": -6, "outcome": "SUPPORTED_BLOCKED"},
     {"operation": "outer", "code": "opNOT_SUPPORTED", "numeric": -3, "outcome": "UNSUPPORTED"},

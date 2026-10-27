@@ -9,7 +9,7 @@
       "owner_pool_shares": 125,
       "expected_withdrawal": {"a": 625, "b": 1000},
       "expected_claimable_balance_count": 2,
-      "expected_classification": "SUPPORTED_SAFE"
+      "expected_classification": "UNVERIFIED_FORECAST"
     },
     {
       "id": "one-output",
@@ -20,7 +20,7 @@
       "expected_withdrawal": {"a": 625, "b": 1000},
       "expected_claimable_balance_count": 1,
       "ledger_state": "valid: second constituent is issued by the pool-share owner",
-      "expected_classification": "SUPPORTED_SAFE"
+      "expected_classification": "UNVERIFIED_FORECAST"
     },
     {
       "id": "zero-outputs",
@@ -31,7 +31,7 @@
       "expected_withdrawal": {"a": 0, "b": 8},
       "expected_claimable_balance_count": 0,
       "ledger_state": "valid: revoked-asset withdrawal floors to zero and second constituent is issued by the owner",
-      "expected_classification": "SUPPORTED_SAFE"
+      "expected_classification": "UNVERIFIED_FORECAST"
     },
     {
       "id": "arithmetic-only-one-output",

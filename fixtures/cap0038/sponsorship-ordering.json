@@ -7,14 +7,14 @@
       "operations": ["SetTrustLineFlags(revoke)"],
       "pool_share_sponsor": null,
       "claimable_balance_sponsor": "trustor",
-      "expected": "SUPPORTED_SAFE"
+      "expected": "UNVERIFIED_FORECAST"
     },
     {
       "id": "sponsored",
       "operations": ["SetTrustLineFlags(revoke)"],
       "pool_share_sponsor": "sponsor",
       "claimable_balance_sponsor": "sponsor",
-      "expected": "SUPPORTED_SAFE"
+      "expected": "UNVERIFIED_FORECAST"
     },
     {
       "id": "sponsorship-sandwich",
@@ -26,7 +26,7 @@
       "pool_share_sponsor": "sponsor",
       "active_replacement_sponsor": "replacement",
       "claimable_balance_sponsor": "replacement",
-      "expected": "SUPPORTED_SAFE only if replacement reserve/counter checks pass"
+      "expected": "UNVERIFIED_FORECAST only if replacement reserve/counter checks pass"
     },
     {
       "id": "sponsorship-sandwich-low-reserve",

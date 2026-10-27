@@ -30,15 +30,15 @@ The crate deliberately remains pinned to 28.0.1. The 28.0.1 generated XDR types 
 
 The proof functions in `src/lib.rs` map authoritative XDR variants as follows:
 
-- `AllowTrustResultCode::Success` → `SUPPORTED_SAFE` for the observed result only.
+- `AllowTrustResultCode::Success` → `UNVERIFIED_FORECAST`; observed success does not establish discovery completeness.
 - `AllowTrustResultCode::{Malformed, NoTrustLine, TrustNotRequired, CantRevoke, SelfNotAllowed, LowReserve}` → `SUPPORTED_BLOCKED`.
-- `SetTrustLineFlagsResultCode::Success` → `SUPPORTED_SAFE` for the observed result only.
+- `SetTrustLineFlagsResultCode::Success` → `UNVERIFIED_FORECAST`; observed success does not establish discovery completeness.
 - All defined non-success `SetTrustLineFlagsResultCode` variants → `SUPPORTED_BLOCKED`.
 - `OperationResultCode::OpNotSupported` → `UNSUPPORTED`.
 - `OperationResultCode::OpInner` → `INCONCLUSIVE` until its nested operation result is decoded.
 - Other defined outer operation failures → `SUPPORTED_BLOCKED`.
 
-These mappings do not convert an observed network success into a guarantee about a future transaction. The evaluator does not currently inspect a snapshot protocol-version field, so it must not claim network compatibility from these mappings alone. Unknown protocol versions, missing nested results, or unrecognized XDR values remain outside the supported mapping.
+These mappings do not convert an observed network success into a guarantee about a future transaction. `SUPPORTED_SAFE` is not emitted by the current evaluator. The evaluator does not currently inspect a snapshot protocol-version field, so it must not claim network compatibility from these mappings alone. Unknown protocol versions, missing nested results, or unrecognized XDR values remain outside the supported mapping.
 
 ## Verification commands and result
 
