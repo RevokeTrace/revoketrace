@@ -1009,6 +1009,10 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                             owner_pool_shares: owner_shares,
                             sponsor: None,
                             last_modified_ledger_seq: Some(pool_entry.last_modified_ledger_seq),
+                            pool_shares_trust_line_count: u32::try_from(
+                                cp.pool_shares_trust_line_count,
+                            )
+                            .ok(),
                         }
                     }
                 },

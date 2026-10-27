@@ -259,6 +259,13 @@ pub struct PoolShareState {
     pub sponsor: Option<String>,
     #[serde(default)]
     pub last_modified_ledger_seq: Option<u32>,
+    /// Pool-wide count of trustlines currently holding shares in this pool
+    /// (LiquidityPoolConstantProductEntry::poolSharesTrustLineCount per
+    /// stellar-core TransactionUtils.cpp `decrementPoolSharesTrustLineCount`).
+    /// When this evidence is unavailable, the evaluator cannot determine
+    /// whether this redemption will delete the pool entry and must not guess.
+    #[serde(default)]
+    pub pool_shares_trust_line_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +352,14 @@ pub struct PoolRedemptionForecast {
     pub withdrawn_a_stroops: u64,
     pub withdrawn_b_stroops: u64,
     pub claimable_balances: Vec<ClaimableBalanceForecast>,
+    /// Whether the liquidity pool entry itself will be deleted by this
+    /// redemption, per stellar-core `decrementPoolSharesTrustLineCount`
+    /// (the pool is erased when `poolSharesTrustLineCount` reaches 0 after
+    /// this trustline's removal). `None` when the evaluator was not given
+    /// independently verified evidence of the pool's current trustline
+    /// count and therefore cannot determine this without guessing.
+    #[serde(default)]
+    pub pool_will_be_deleted: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1117,12 +1132,31 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
             *new_sponsorship_obligations.entry(replacement).or_insert(0) += num_cb as u32;
         }
 
+        let pool_will_be_deleted = match pool.pool_shares_trust_line_count {
+            Some(0) => {
+                eval_errors.push(format!(
+                    "{}: poolSharesTrustLineCount is already zero but the owner still holds a pool-share trustline; evidence is contradictory",
+                    pool.pool_id
+                ));
+                None
+            }
+            Some(count) => Some(count - 1 == 0),
+            None => {
+                eval_warnings.push(format!(
+                    "{}: liquidity pool counter change (poolSharesTrustLineCount) is not forecast; pool_shares_trust_line_count evidence was not supplied",
+                    pool.pool_id
+                ));
+                None
+            }
+        };
+
         redemptions.push(PoolRedemptionForecast {
             pool_id: pool.pool_id.clone(),
             owner: pool.owner.clone(),
             withdrawn_a_stroops: amount_a,
             withdrawn_b_stroops: amount_b,
             claimable_balances,
+            pool_will_be_deleted,
         });
     }
 
@@ -1456,6 +1490,7 @@ mod tests {
                 owner_pool_shares: 125,
                 sponsor: sponsor.map(str::to_owned),
                 last_modified_ledger_seq: None,
+                pool_shares_trust_line_count: None,
             }],
             sponsorship_handoffs: Vec::new(),
         }
@@ -1600,6 +1635,7 @@ mod tests {
             owner_pool_shares: 125,
             sponsor: None,
             last_modified_ledger_seq: None,
+            pool_shares_trust_line_count: None,
         });
         state.pool_share_trustlines.push(PoolShareState {
             pool_id: pool3_id.clone(),
@@ -1614,6 +1650,7 @@ mod tests {
             owner_pool_shares: 125,
             sponsor: None,
             last_modified_ledger_seq: None,
+            pool_shares_trust_line_count: None,
         });
         state.accounts.push(AccountState {
             id: "other-holder".to_owned(),
@@ -3113,6 +3150,90 @@ mod tests {
             "canonical decoded key ordering must place 0x0a before 0x0b, despite ASCII 'B' < 'a'"
         );
         assert_eq!(report.pool_redemptions[1].pool_id, pool_b_id);
+    }
+
+    #[test]
+    fn missing_pool_shares_trust_line_count_evidence_leaves_deletion_unforecast() {
+        // Phase 4C: without independently verified evidence of the pool's
+        // current poolSharesTrustLineCount, the evaluator must not guess
+        // whether this redemption deletes the liquidity pool entry
+        // (stellar-core TransactionUtils.cpp `decrementPoolSharesTrustLineCount`).
+        let snap = snapshot(None, true);
+        assert_eq!(
+            snap.pool_share_trustlines[0].pool_shares_trust_line_count,
+            None
+        );
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, None);
+        assert!(
+            report.warnings.iter().any(|w| {
+                w.contains("liquidity pool counter change") && w.contains("not forecast")
+            }),
+            "expected explicit warning about unforecast liquidity pool counter change, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn pool_deletion_is_forecast_deterministically_when_counter_evidence_is_supplied() {
+        // When the owner is the pool's only remaining pool-share trustline
+        // holder (count == 1), this redemption removes the last trustline
+        // and stellar-core erases the pool entry.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(1);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, Some(true));
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("liquidity pool counter change")),
+            "no counter warning should be emitted once evidence is supplied"
+        );
+    }
+
+    #[test]
+    fn pool_survives_redemption_when_other_trustlines_remain() {
+        // Two other accounts still hold pool-share trustlines in this pool
+        // (count == 3 before this one is removed), so the pool entry
+        // survives this redemption.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(3);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, Some(false));
+    }
+
+    #[test]
+    fn contradictory_zero_pool_shares_trust_line_count_fails_closed() {
+        // A supplied counter of 0 while the owner still holds a pool-share
+        // trustline in this very pool is internally contradictory evidence;
+        // the evaluator must fail closed rather than guess a result.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(0);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("poolSharesTrustLineCount is already zero")),
+            "expected a contradictory-evidence error, got: {:?}",
+            report.errors
+        );
     }
 
     #[test]

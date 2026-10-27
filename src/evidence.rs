@@ -960,6 +960,10 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                             owner_pool_shares: owner_shares,
                             sponsor: ptl_sponsor,
                             last_modified_ledger_seq: Some(pool_entry.last_modified_ledger_seq),
+                            pool_shares_trust_line_count: u32::try_from(
+                                cp.pool_shares_trust_line_count,
+                            )
+                            .ok(),
                         }
                     }
                 },
@@ -1680,6 +1684,7 @@ mod tests {
                 owner_pool_shares: 100,
                 sponsor: None,
                 last_modified_ledger_seq: Some(4900),
+                pool_shares_trust_line_count: None,
             }],
             sponsorship_handoffs: Vec::new(),
         };
@@ -2316,6 +2321,7 @@ mod tests {
                     owner_pool_shares: 10,
                     sponsor: None,
                     last_modified_ledger_seq: Some(4900),
+                    pool_shares_trust_line_count: None,
                 },
                 PoolShareState {
                     pool_id: pool_id_2,
@@ -2330,6 +2336,7 @@ mod tests {
                     owner_pool_shares: 10,
                     sponsor: None,
                     last_modified_ledger_seq: Some(4900),
+                    pool_shares_trust_line_count: None,
                 },
             ],
             sponsorship_handoffs: vec![],
@@ -2562,6 +2569,7 @@ mod tests {
                 owner_pool_shares: 10,
                 sponsor: Some(sponsor_strkey),
                 last_modified_ledger_seq: Some(4900),
+                pool_shares_trust_line_count: None,
             }],
             sponsorship_handoffs: vec![],
         };
