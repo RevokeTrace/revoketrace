@@ -214,41 +214,53 @@ The following table records the protocol verification for each accounting rule i
 - **Applicable Protocol Version:** $\ge 18$.
 - **Input Requirements:** Pool-share backer (`pool.sponsor.unwrap_or(pool.owner)`), active `SponsorshipHandoff` entries.
 - **State Transition:**
-  - **Non-Sandwich (Direct Sponsorship):** Backer sponsors CB directly via `establishEntrySponsorship`. Reuses freed reserves from deleted pool share without requiring surplus balance above minimum balance. Backer `num_sponsoring += num_cb` (if trustor, net subentry change $-2 + 2$ balances out).
+  - **Non-Sandwich (Direct Sponsorship / Reserve Reuse):** Backer sponsors CB directly via `establishEntrySponsorship`. Reuses freed reserves from deleted pool share without requiring surplus balance above minimum balance. Stellar Core explicitly permits accounts already below minimum balance to complete direct reserve reuse.
   - **Sandwich (Replacement Sponsor):** Replacement sponsor $C$ sponsors CB via `createEntryWithPossibleSponsorship`. $C$ did not hold the deleted pool share, so $C$ must have sufficient balance ($\text{balance} \ge \text{min\_balance} + \text{selling\_liabilities}$) and counter headroom ($\text{num\_sponsoring} + \text{subentries} + \text{num\_cb} \le \text{UINT32\_MAX}$). $C.\text{num\_sponsoring} += \text{num\_cb}$.
 - **Failure Conditions:**
   - Sandwich sponsor has insufficient balance: fails closed as `Classification::SupportedBlocked` (`SET_TRUST_LINE_FLAGS_LOW_RESERVE`).
   - Counter limit exceeded: fails closed as `Classification::SupportedBlocked` (`opTOO_MANY_SPONSORING`).
+  - Sponsorship evidence incomplete when evaluating blocker: downgraded to `Classification::Inconclusive`.
 - **Tests Proving Implementation:**
   - `test_target_failure_mode_3_sponsored_claimable_balance_creation_in_sandwich`
   - `test_target_failure_mode_5_sponsor_reserve_exhaustion`
+  - `test_target_failure_mode_6_direct_reserve_reuse_succeeds_when_account_below_minimum_balance`
+  - `test_mixed_sponsored_and_unsponsored_direct_reserve_reuse`
   - `active_sponsorship_handoff_can_block_on_low_reserve`
 
 ### Rule 6: Deterministic Pool Iteration Ordering
 - **Protocol Source:** Stellar Core `TransactionUtils.cpp:98` (`std::sort(poolTLKeys.begin(), poolTLKeys.end())`).
 - **Applicable Protocol Version:** $\ge 18$.
 - **Input Requirements:** Multiple affected pool-share trustlines.
-- **State Transition:** Candidate pools sorted canonically by `pool_id` (Stellar Core ledger key order) before redemption and counter delta accumulation.
-- **Failure Conditions:** Platform-dependent iteration order discrepancies.
+- **State Transition:** Candidate pools sorted canonically by decoded 32-byte `PoolId` representation (Stellar Core binary `LedgerKey` order) before redemption and counter delta accumulation. Prevents ASCII/hex formatting divergence (e.g., uppercase hex vs lowercase hex).
+- **Failure Conditions:** Non-canonical sorting order divergence.
 - **Tests Proving Implementation:**
   - `test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation`
+  - `test_deterministic_pool_ordering_observable_difference`
 
 ### Rule 7: Operation Context Reconstruction & Revoke ID Derivation
-- **Protocol Source:** Stellar Core CAP-0038 Section "Claimable Balance ID", `HashIdPreimageRevokeId`.
+- **Protocol Source:** Stellar Core CAP-0038 Section "Claimable Balance ID", `HashIdPreimageRevokeId`, `redeemIntoClaimableBalance`.
 - **Applicable Protocol Version:** $\ge 18$.
 - **Input Requirements:** `tx_source_account`, `sequence`, `operation_index`, `pool_id`, constituent asset.
 - **State Transition:**
-  - When all context fields are present: derives exact 32-byte SHA-256 hash ID via `derive_pool_revoke_claimable_balance_id`.
-  - When any context field is missing: outputs `claimable_balance_id: None` with an explicit warning, maintaining exact counter and amount accounting without fabricating IDs.
+  - When all context fields are valid: derives exact 32-byte SHA-256 hash ID via `derive_pool_revoke_claimable_balance_id` wrapped in `HashIdPreimage::PoolRevokeOpId` discriminant (XDR union envelope type 5).
+  - Validates sequence numbers: rejects non-positive or out-of-range (`seq == 0 || seq > i64::MAX`).
+  - When context is missing: outputs `claimable_balance_id: None` with an explicit warning, maintaining exact counter and amount accounting without fabricating IDs.
+  - When context is invalid: fails closed as `Classification::Inconclusive`.
 - **Failure Conditions:**
-  - Operation source is not asset issuer: fails closed as `Classification::Inconclusive`.
-  - Trustor equals operation source: fails closed as `Classification::Inconclusive`.
-  - Transaction source account missing from snapshot: fails closed as `Classification::Inconclusive`.
-  - Missing operation index when sponsorship handoffs exist: fails closed as `Classification::Inconclusive`.
+  - Invalid sequence range (`seq == 0` or `seq > i64::MAX`): fails closed as `Classification::Inconclusive`.
+  - Malformed transaction source StrKey: fails closed as `Classification::Inconclusive`.
+  - Malformed pool ID hex: fails closed as `Classification::Inconclusive`.
+  - Missing constituent credit trustline evidence: fails closed as `Classification::Inconclusive`.
+  - Stale constituent credit trustline (`last_modified > ledger_seq`): fails closed as `Classification::Inconclusive`.
 - **Tests Proving Implementation:**
   - `test_target_failure_mode_11_missing_transaction_sequence`
   - `test_target_failure_mode_12_missing_operation_index`
   - `test_target_failure_mode_17_conflicting_operation_context`
+  - `test_sequence_number_boundary_overflow_fails_closed`
+  - `test_invalid_supplied_tx_source_strkey_fails_closed`
+  - `test_claimable_balance_id_derivation_with_native_asset`
+  - `test_missing_constituent_credit_trustline_fails_closed`
+  - `test_stale_constituent_credit_trustline_fails_closed`
   - `derives_cap0038_pool_revoke_id_from_xdr_preimage`
 
 ### Rule 8: Sponsorship Sandwich Ordering & Validation
@@ -299,5 +311,36 @@ The following table records the protocol verification for each accounting rule i
 - No signing, broadcasting, key storage, indexing, or external paid infrastructure.
 
 ### 6.2 Remaining Blockers & Next Phase
-- Phase 4B implements exact reserve, sponsorship, and operation-context modeling, backed by 101 unit tests and verified against official Stellar Core source code.
+- Phase 4B implements exact reserve, sponsorship, and operation-context modeling, backed by 109 unit tests and verified against official Stellar Core source code.
 - Phase 4C (CLI and reporting interface) cannot begin until Phase 4B has been reviewed and merged into `main`.
+
+---
+
+## 7. Protocol Correctness Corrections (Post-PR #5 Review)
+
+Following independent review of initial Phase 4B implementation, five critical correctness corrections were applied:
+
+1. **Direct Reserve Reuse vs Sponsorship Sandwich Handling:**
+   - Stellar Core `TransactionUtils.cpp:1690-1790` permits accounts to reuse freed reserves directly via `establishEntrySponsorship` without establishing new surplus balance.
+   - An account already below the required minimum reserve before a direct-reuse transition completes the redemption without an error.
+   - Active sponsorship sandwiches introduce replacement sponsors via `createEntryWithPossibleSponsorship`, which strictly require balance solvency (`balance >= min_balance + selling_liabilities`) and counter capacity (`num_sponsoring + subentries + new_cb <= UINT32_MAX`).
+   - If evidence cannot prove whether reserve checking applies, the forecast fails closed as `Inconclusive`, not `SupportedBlocked`.
+
+2. **Constituent Asset Clawback Fail-Closed Verification:**
+   - Replaced silent fallback `is_some_and` with strict existence, ownership, and flag verification for all constituent credit assets.
+   - Missing, stale (`last_modified > ledger_seq`), or contradictory constituent trustlines fail closed as `Inconclusive`.
+   - `AuthoritativeEvidenceAdapter` was extended to query all constituent credit trustlines via atomic batch RPC `getLedgerEntries`, maintaining single-ledger consistency and the 200-key limit.
+
+3. **Claimable-Balance ID Context & XDR Discriminant Validation:**
+   - Sequence number is range-checked (`seq > 0 && seq <= i64::MAX as u64`) to prevent silent overflow or wrapping.
+   - Hash derivation wraps `HashIdPreimageRevokeId` inside the outer canonical `HashIdPreimage::PoolRevokeOpId` union discriminant (envelope type 5) per Stellar Core XDR specifications.
+   - Distinguishes missing context (returns uncomputed `claimable_balance_id: None` with a warning, preserving forecast) from invalid supplied context (which fails closed as `Inconclusive`).
+
+4. **Canonical Decoded 32-Byte Pool Key Ordering:**
+   - Affected pools are sorted by canonical decoded 32-byte `PoolId` (`stellar_xdr::PoolId(stellar_xdr::Hash)`), ensuring exact parity with Stellar Core's `std::sort(poolTLKeys.begin(), poolTLKeys.end())` regardless of hex string formatting (e.g., uppercase hex vs lowercase hex).
+
+5. **Evidence-Gated Classification Invariants:**
+   - `SupportedBlocked` is downgraded to `Inconclusive` unless base reserve is verified, sponsorship evidence is complete, and discovery coverage is complete.
+   - `SupportedSafe` remains unreachable.
+   - `CompleteAuthoritativeLedger` remains unreachable for caller-supplied snapshots.
+   - `UnverifiedForecast` never guarantees transaction success.

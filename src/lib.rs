@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
     AccountId, AllowTrustResultCode, AlphaNum4, AlphaNum12, Asset, AssetCode4, AssetCode12, Hash,
-    HashIdPreimageRevokeId, Limits, LiquidityPoolConstantProductParameters,
+    HashIdPreimage, HashIdPreimageRevokeId, Limits, LiquidityPoolConstantProductParameters,
     LiquidityPoolParameters, OperationResultCode, PoolId, PublicKey, ReadXdr, SequenceNumber,
     SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, Uint256, WriteXdr,
 };
@@ -99,13 +99,13 @@ pub fn derive_pool_revoke_claimable_balance_id(
     pool_id: Hash,
     asset: Asset,
 ) -> Result<Hash, stellar_xdr::Error> {
-    let preimage = HashIdPreimageRevokeId {
+    let preimage = HashIdPreimage::PoolRevokeOpId(HashIdPreimageRevokeId {
         source_account,
         seq_num: sequence,
         op_num: operation_index,
         liquidity_pool_id: PoolId(pool_id),
         asset,
-    };
+    });
     let encoded = preimage.to_xdr(Limits::none())?;
     Ok(Hash(Sha256::digest(encoded).into()))
 }
@@ -492,6 +492,14 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
     {
         errors.push(format!("transaction source account {} is missing", tx_src));
     }
+    if let Some(seq) = operation.sequence
+        && (seq == 0 || seq > i64::MAX as u64)
+    {
+        errors.push(format!(
+            "transaction sequence {} cannot be represented as a valid Stellar sequence number",
+            seq
+        ));
+    }
     if operation.asset.issuer != operation.source_account {
         errors.push("operation source is not the asset issuer".to_owned());
     }
@@ -653,6 +661,47 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
     for pool in &snapshot.pool_share_trustlines {
         if !pool_ids.insert(&pool.pool_id) {
             errors.push(format!("duplicate pool trustline {}", pool.pool_id));
+        }
+        if discovery::decode_pool_id(&pool.pool_id).is_err() {
+            errors.push(format!("pool {} has invalid pool ID format", pool.pool_id));
+        }
+        let is_affected = pool.owner == operation.trustor
+            && ((pool.asset_a == operation.asset.code
+                && pool.asset_a_issuer == operation.asset.issuer)
+                || (pool.asset_b == operation.asset.code
+                    && pool.asset_b_issuer == operation.asset.issuer));
+        if is_affected {
+            let constituents = [
+                (&pool.asset_a, &pool.asset_a_issuer),
+                (&pool.asset_b, &pool.asset_b_issuer),
+            ];
+            for (code, issuer) in constituents {
+                let is_native = code == "XLM" && (issuer == "native" || issuer.is_empty());
+                let is_owner = issuer == &pool.owner;
+                let is_target = code == &operation.asset.code && issuer == &operation.asset.issuer;
+                if !is_native && !is_owner && !is_target {
+                    let matching: Vec<_> = snapshot
+                        .trustlines
+                        .iter()
+                        .filter(|tl| {
+                            tl.owner == pool.owner
+                                && tl.asset.code == *code
+                                && tl.asset.issuer == *issuer
+                        })
+                        .collect();
+                    if matching.is_empty() {
+                        errors.push(format!(
+                            "missing constituent credit trustline for asset {}:{} on trustor {}",
+                            code, issuer, pool.owner
+                        ));
+                    } else if matching.len() > 1 {
+                        errors.push(format!(
+                            "multiple constituent credit trustlines for asset {}:{} on trustor {}",
+                            code, issuer, pool.owner
+                        ));
+                    }
+                }
+            }
         }
         if let Some(seq) = pool.last_modified_ledger_seq
             && seq > snapshot.ledger_sequence
@@ -826,6 +875,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
 
     let mut redemptions = Vec::new();
     let mut deltas = std::collections::BTreeMap::<String, AccountDelta>::new();
+    let mut new_sponsorship_obligations = std::collections::BTreeMap::<String, u32>::new();
     let mut eval_errors = Vec::new();
     let mut eval_warnings = Vec::new();
 
@@ -840,8 +890,15 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                         && pool.asset_b_issuer == operation.asset.issuer))
         })
         .collect();
-    // Deterministic ordering by pool_id matching Stellar Core's std::sort on poolTLKeys
-    affected_pools.sort_by(|a, b| a.pool_id.cmp(&b.pool_id));
+    // Deterministic ordering by decoded 32-byte pool ID matching Stellar Core's std::sort on poolTLKeys
+    affected_pools.sort_by(|a, b| {
+        let key_a = discovery::decode_pool_id(&a.pool_id).map(|p| p.0.0);
+        let key_b = discovery::decode_pool_id(&b.pool_id).map(|p| p.0.0);
+        match (key_a, key_b) {
+            (Ok(bytes_a), Ok(bytes_b)) => bytes_a.cmp(&bytes_b),
+            _ => a.pool_id.cmp(&b.pool_id),
+        }
+    });
 
     let can_derive_cb_id = operation.tx_source_account.is_some()
         && operation.sequence.is_some()
@@ -900,16 +957,43 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                     && *asset_issuer == operation.asset.issuer
                 {
                     (operation.before_flags & TRUSTLINE_CLAWBACK_ENABLED_FLAG) != 0
+                } else if *asset_code == "XLM"
+                    && (*asset_issuer == "native" || asset_issuer.is_empty())
+                {
+                    false
                 } else {
-                    snapshot
+                    let matching_tls: Vec<_> = snapshot
                         .trustlines
                         .iter()
-                        .find(|tl| {
+                        .filter(|tl| {
                             tl.owner == pool.owner
                                 && tl.asset.code == *asset_code
                                 && tl.asset.issuer == *asset_issuer
                         })
-                        .is_some_and(|tl| (tl.flags & TRUSTLINE_CLAWBACK_ENABLED_FLAG) != 0)
+                        .collect();
+                    if matching_tls.is_empty() {
+                        eval_errors.push(format!(
+                            "missing constituent credit trustline for asset {}:{} on trustor {}",
+                            asset_code, asset_issuer, pool.owner
+                        ));
+                        false
+                    } else if matching_tls.len() > 1 {
+                        eval_errors.push(format!(
+                            "multiple constituent credit trustlines for asset {}:{} on trustor {}",
+                            asset_code, asset_issuer, pool.owner
+                        ));
+                        false
+                    } else if let Some(seq) = matching_tls[0].last_modified_ledger_seq
+                        && seq > snapshot.ledger_sequence
+                    {
+                        eval_errors.push(format!(
+                            "constituent credit trustline for asset {}:{} is newer than snapshot ledger",
+                            asset_code, asset_issuer
+                        ));
+                        false
+                    } else {
+                        (matching_tls[0].flags & TRUSTLINE_CLAWBACK_ENABLED_FLAG) != 0
+                    }
                 };
 
                 let claimable_balance_id = if can_derive_cb_id {
@@ -917,26 +1001,65 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                     let seq = operation.sequence.unwrap();
                     let op_idx = operation.operation_index.unwrap();
 
-                    match (
-                        decode_account_id(tx_src),
-                        discovery::decode_pool_id(&pool.pool_id),
-                        make_xdr_asset(asset_code, asset_issuer),
-                    ) {
-                        (Ok(src_bytes), Ok(p_id), Ok(xdr_asset)) => {
-                            let src_acc_id =
-                                AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(src_bytes)));
-                            match derive_pool_revoke_claimable_balance_id(
-                                src_acc_id,
-                                SequenceNumber(seq as i64),
-                                op_idx,
-                                p_id.0,
-                                xdr_asset,
-                            ) {
-                                Ok(h) => Some(hex::encode(h.0)),
-                                Err(_) => None,
+                    let seq_i64 = match i64::try_from(seq) {
+                        Ok(s) if s > 0 => s,
+                        _ => {
+                            eval_errors
+                                .push(format!("invalid transaction sequence number: {}", seq));
+                            0
+                        }
+                    };
+
+                    let src_bytes = match decode_account_id(tx_src) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eval_errors
+                                .push(format!("invalid transaction source account strkey: {}", e));
+                            [0u8; 32]
+                        }
+                    };
+
+                    let p_id = match discovery::decode_pool_id(&pool.pool_id) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eval_errors.push(format!(
+                                "invalid pool ID for claimable balance derivation: {}",
+                                e
+                            ));
+                            PoolId(stellar_xdr::Hash([0u8; 32]))
+                        }
+                    };
+
+                    let xdr_asset = match make_xdr_asset(asset_code, asset_issuer) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            eval_errors.push(format!(
+                                "invalid constituent asset for claimable balance derivation: {}",
+                                e
+                            ));
+                            stellar_xdr::Asset::Native
+                        }
+                    };
+
+                    if eval_errors.is_empty() {
+                        let src_acc_id =
+                            AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(src_bytes)));
+                        match derive_pool_revoke_claimable_balance_id(
+                            src_acc_id,
+                            SequenceNumber(seq_i64),
+                            op_idx,
+                            p_id.0,
+                            xdr_asset,
+                        ) {
+                            Ok(h) => Some(hex::encode(h.0)),
+                            Err(e) => {
+                                eval_errors
+                                    .push(format!("claimable balance derivation XDR error: {}", e));
+                                None
                             }
                         }
-                        _ => None,
+                    } else {
+                        None
                     }
                 } else {
                     None
@@ -984,13 +1107,14 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
 
         if let Some(replacement) = active_replacement_sponsor {
             let replacement_delta = deltas.entry(replacement.clone()).or_insert(AccountDelta {
-                id: replacement,
+                id: replacement.clone(),
                 balance_stroops: 0,
                 subentries: 0,
                 num_sponsoring: 0,
                 num_sponsored: 0,
             });
             replacement_delta.num_sponsoring += num_cb;
+            *new_sponsorship_obligations.entry(replacement).or_insert(0) += num_cb as u32;
         }
 
         redemptions.push(PoolRedemptionForecast {
@@ -1076,48 +1200,64 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         }
 
         // Stellar Core opTOO_MANY_SPONSORING
+        let has_new_sponsorship = new_sponsorship_obligations
+            .get(&delta.id)
+            .copied()
+            .unwrap_or(0)
+            > 0;
         if u128::from(after.num_sponsoring) + u128::from(after.subentries) > u128::from(u32::MAX) {
-            blocked_errors.push(format!(
-                "{} exceeds the UINT32_MAX sponsorship accounting limit",
-                after.id
-            ));
+            if has_new_sponsorship {
+                blocked_errors.push(format!(
+                    "replacement sponsor {} exceeds the UINT32_MAX sponsorship accounting limit",
+                    after.id
+                ));
+            } else {
+                invalid_counter_errors.push(format!(
+                    "account {} sponsorship accounting exceeds UINT32_MAX",
+                    after.id
+                ));
+            }
             continue;
         }
 
-        // Reserve check
-        let base_reserve = match snapshot.base_reserve_stroops {
-            Some(r) => r,
-            None => {
-                invalid_counter_errors.push("base reserve is unavailable".to_owned());
-                continue;
-            }
-        };
-
-        let min_balance = match minimum_balance(&after, base_reserve) {
-            Ok(m) => m,
-            Err(e) => {
-                invalid_counter_errors.push(e);
-                continue;
-            }
-        };
-
-        let total_required =
-            match min_balance.checked_add(u128::from(after.selling_liabilities_stroops)) {
-                Some(t) => t,
+        // Reserve check: Only accounts establishing NEW reserve obligations (e.g. replacement sponsors in an active sandwich)
+        // require a balance check against minimum_balance + selling_liabilities.
+        // Accounts performing direct reuse of released reserves from deleted pool shares do NOT require a balance check.
+        if has_new_sponsorship {
+            let base_reserve = match snapshot.base_reserve_stroops {
+                Some(r) => r,
                 None => {
-                    invalid_counter_errors.push(format!(
-                        "reserve and liabilities overflow for account {}",
-                        after.id
-                    ));
+                    invalid_counter_errors.push("base reserve is unavailable".to_owned());
                     continue;
                 }
             };
 
-        if u128::from(after.balance_stroops) < total_required {
-            blocked_errors.push(format!(
-                "{} would be below reserve: balance {}, minimum {}",
-                after.id, after.balance_stroops, total_required
-            ));
+            let min_balance = match minimum_balance(&after, base_reserve) {
+                Ok(m) => m,
+                Err(e) => {
+                    invalid_counter_errors.push(e);
+                    continue;
+                }
+            };
+
+            let total_required =
+                match min_balance.checked_add(u128::from(after.selling_liabilities_stroops)) {
+                    Some(t) => t,
+                    None => {
+                        invalid_counter_errors.push(format!(
+                            "reserve and liabilities overflow for account {}",
+                            after.id
+                        ));
+                        continue;
+                    }
+                };
+
+            if u128::from(after.balance_stroops) < total_required {
+                blocked_errors.push(format!(
+                    "replacement sponsor {} would be below reserve: balance {}, minimum {}",
+                    after.id, after.balance_stroops, total_required
+                ));
+            }
         }
     }
 
@@ -1128,7 +1268,22 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         Classification::Inconclusive
     } else if !blocked_errors.is_empty() {
         all_errors.extend(blocked_errors);
-        Classification::SupportedBlocked
+        // Only classify as SupportedBlocked if required evidence is established.
+        // If sponsorship evidence is incomplete, base reserve is missing, or discovery is incomplete, classify as Inconclusive.
+        let target_tl = snapshot
+            .trustlines
+            .iter()
+            .find(|tl| tl.owner == operation.trustor && same_asset(&tl.asset, &operation.asset));
+        if !snapshot.sponsorship_evidence_complete
+            || snapshot.base_reserve_stroops.is_none()
+            || target_tl
+                .and_then(|tl| tl.liquidity_pool_use_count)
+                .is_none()
+        {
+            Classification::Inconclusive
+        } else {
+            Classification::SupportedBlocked
+        }
     } else if !all_errors.is_empty() {
         Classification::Inconclusive
     } else {
@@ -1185,8 +1340,10 @@ mod tests {
     use super::*;
     use stellar_xdr::{AccountId, AlphaNum4, Asset, AssetCode4, PublicKey, Uint256, WriteXdr};
 
+    const TEST_POOL_ID: &str = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46";
+
     fn snapshot(sponsor: Option<&str>, manifest_valid: bool) -> Snapshot {
-        let pool_ids = vec!["pool-1".to_owned()];
+        let pool_ids = vec![TEST_POOL_ID.to_owned()];
         Snapshot {
             network_passphrase: "Test SDF Network ; September 2015".to_owned(),
             ledger_sequence: 100,
@@ -1251,20 +1408,43 @@ mod tests {
                     num_sponsored: 0,
                     last_modified_ledger_seq: None,
                 },
-            ],
-            trustlines: vec![CreditTrustlineState {
-                owner: "holder".to_owned(),
-                asset: CreditAsset {
-                    code: "USD".to_owned(),
-                    issuer: "issuer".to_owned(),
+                AccountState {
+                    id: "other-issuer".to_owned(),
+                    balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: None,
                 },
-                flags: AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG,
-                sponsor: None,
-                liquidity_pool_use_count: None,
-                last_modified_ledger_seq: None,
-            }],
+            ],
+            trustlines: vec![
+                CreditTrustlineState {
+                    owner: "holder".to_owned(),
+                    asset: CreditAsset {
+                        code: "USD".to_owned(),
+                        issuer: "issuer".to_owned(),
+                    },
+                    flags: AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG,
+                    sponsor: None,
+                    liquidity_pool_use_count: Some(1),
+                    last_modified_ledger_seq: None,
+                },
+                CreditTrustlineState {
+                    owner: "holder".to_owned(),
+                    asset: CreditAsset {
+                        code: "EUR".to_owned(),
+                        issuer: "other-issuer".to_owned(),
+                    },
+                    flags: AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG,
+                    sponsor: None,
+                    liquidity_pool_use_count: None,
+                    last_modified_ledger_seq: None,
+                },
+            ],
             pool_share_trustlines: vec![PoolShareState {
-                pool_id: "pool-1".to_owned(),
+                pool_id: TEST_POOL_ID.to_owned(),
                 owner: "holder".to_owned(),
                 asset_a: "USD".to_owned(),
                 asset_a_issuer: "issuer".to_owned(),
@@ -1403,8 +1583,12 @@ mod tests {
     #[test]
     fn only_the_target_trustor_and_exact_issuer_asset_are_affected() {
         let mut state = snapshot(None, true);
+        let pool2_id =
+            "0000000000000000000000000000000000000000000000000000000000000002".to_owned();
+        let pool3_id =
+            "0000000000000000000000000000000000000000000000000000000000000003".to_owned();
         state.pool_share_trustlines.push(PoolShareState {
-            pool_id: "pool-2".to_owned(),
+            pool_id: pool2_id.clone(),
             owner: "other-holder".to_owned(),
             asset_a: "USD".to_owned(),
             asset_a_issuer: "issuer".to_owned(),
@@ -1418,7 +1602,7 @@ mod tests {
             last_modified_ledger_seq: None,
         });
         state.pool_share_trustlines.push(PoolShareState {
-            pool_id: "pool-3".to_owned(),
+            pool_id: pool3_id.clone(),
             owner: "holder".to_owned(),
             asset_a: "USD".to_owned(),
             asset_a_issuer: "wrong-issuer".to_owned(),
@@ -1441,8 +1625,8 @@ mod tests {
             num_sponsored: 0,
             last_modified_ledger_seq: None,
         });
-        state.discovery.pool_ids.push("pool-2".to_owned());
-        state.discovery.pool_ids.push("pool-3".to_owned());
+        state.discovery.pool_ids.push(pool2_id);
+        state.discovery.pool_ids.push(pool3_id);
         state.discovery.manifest_sha256 = discovery_manifest_sha256(
             &state.network_passphrase,
             state.ledger_sequence,
@@ -1451,7 +1635,7 @@ mod tests {
         let report = evaluate(&revoke(), &state);
         assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_eq!(report.pool_redemptions.len(), 1);
-        assert_eq!(report.pool_redemptions[0].pool_id, "pool-1");
+        assert_eq!(report.pool_redemptions[0].pool_id, TEST_POOL_ID);
     }
 
     #[test]
@@ -1486,6 +1670,7 @@ mod tests {
     #[test]
     fn internally_consistent_but_incomplete_snapshot_is_unverified_only() {
         let mut state = snapshot(None, true);
+        state.trustlines[0].liquidity_pool_use_count = Some(0);
         state.pool_share_trustlines.clear();
         state.discovery.pool_ids.clear();
         state.discovery.manifest_sha256 = discovery_manifest_sha256(
@@ -1640,7 +1825,7 @@ mod tests {
         .expect("derive claimable balance ID");
         assert_eq!(
             hex::encode(id.0),
-            "0a76bfde6dafd3b0f171ec064a56242f7cbc846bef3bc50296b87714a39e1553"
+            "261701331537d68dbbc5be1e3f109622ab014abd436440c1556133b52fa852a5"
         );
     }
 
@@ -2214,14 +2399,19 @@ mod tests {
 
     #[test]
     fn test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation() {
+        let pool_a_id =
+            "000000000000000000000000000000000000000000000000000000000000000a".to_owned();
+        let pool_b_id =
+            "000000000000000000000000000000000000000000000000000000000000000b".to_owned();
         let mut snap = snapshot(None, true);
         snap.accounts[1].balance_stroops = 100_000_000;
         snap.accounts[1].subentries = 4;
-        snap.pool_share_trustlines[0].pool_id = "pool-b".to_owned();
+        snap.trustlines[0].liquidity_pool_use_count = Some(2);
+        snap.pool_share_trustlines[0].pool_id = pool_b_id.clone();
         let mut pool_a = snap.pool_share_trustlines[0].clone();
-        pool_a.pool_id = "pool-a".to_owned();
+        pool_a.pool_id = pool_a_id.clone();
         snap.pool_share_trustlines.push(pool_a);
-        snap.discovery.pool_ids = vec!["pool-a".to_owned(), "pool-b".to_owned()];
+        snap.discovery.pool_ids = vec![pool_a_id.clone(), pool_b_id.clone()];
         snap.discovery.manifest_sha256 = discovery_manifest_sha256(
             &snap.network_passphrase,
             snap.ledger_sequence,
@@ -2232,8 +2422,8 @@ mod tests {
         let report = evaluate(&op, &snap);
         assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_eq!(report.pool_redemptions.len(), 2);
-        assert_eq!(report.pool_redemptions[0].pool_id, "pool-a");
-        assert_eq!(report.pool_redemptions[1].pool_id, "pool-b");
+        assert_eq!(report.pool_redemptions[0].pool_id, pool_a_id);
+        assert_eq!(report.pool_redemptions[1].pool_id, pool_b_id);
 
         let holder_delta = report
             .account_deltas
@@ -2270,20 +2460,22 @@ mod tests {
     }
 
     #[test]
-    fn test_target_failure_mode_6_insufficient_minimum_balance_on_trustor() {
+    fn test_target_failure_mode_6_direct_reserve_reuse_succeeds_when_account_below_minimum_balance()
+    {
         let mut snap = snapshot(None, true);
         snap.accounts[1].balance_stroops = 15_000_000;
         let op = revoke();
         let report = evaluate(&op, &snap);
-        assert_eq!(report.classification, Classification::SupportedBlocked);
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.contains("holder") && e.contains("below reserve")),
-            "expected holder below reserve error, got: {:?}",
-            report.errors
-        );
+        // Direct reserve reuse of released pool share reserves does not check balance against minimum balance
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -2);
+        assert_eq!(holder_delta.num_sponsoring, 2);
     }
 
     #[test]
@@ -2349,14 +2541,27 @@ mod tests {
             report_b.errors
         );
 
-        // Part C: selling liabilities increase required reserve, leading to SupportedBlocked
+        // Part C: selling liabilities increase required reserve on replacement sponsor in a sandwich, leading to SupportedBlocked
         let mut snap_c = snapshot(None, true);
-        snap_c.accounts[1].selling_liabilities_stroops = 1_000_000;
-        let report_c = evaluate(&op, &snap_c);
+        snap_c.accounts[3].balance_stroops = 10_000_000; // replacement has exactly 2 base reserves (10 stroops)
+        snap_c.accounts[3].selling_liabilities_stroops = 1_000_000; // selling liabilities push required balance to 11 stroops
+        snap_c.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op_c = revoke();
+        op_c.operation_index = Some(1);
+        let report_c = evaluate(&op_c, &snap_c);
         assert_eq!(report_c.classification, Classification::SupportedBlocked);
         assert!(
-            report_c.errors.iter().any(|e| e.contains("below reserve")),
-            "expected below reserve error due to selling liabilities, got: {:?}",
+            report_c
+                .errors
+                .iter()
+                .any(|e| e.contains("replacement") && e.contains("below reserve")),
+            "expected below reserve error due to selling liabilities on replacement sponsor, got: {:?}",
             report_c.errors
         );
     }
@@ -2676,5 +2881,272 @@ mod tests {
             !cb_eur.clawback_flag_enabled,
             "EUR claimable balance must not have clawback flag enabled"
         );
+    }
+
+    #[test]
+    fn test_mixed_sponsored_and_unsponsored_direct_reserve_reuse() {
+        let pool_a_id =
+            "000000000000000000000000000000000000000000000000000000000000000a".to_owned();
+        let pool_b_id =
+            "000000000000000000000000000000000000000000000000000000000000000b".to_owned();
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].balance_stroops = 100_000_000;
+        snap.accounts[1].subentries = 4;
+        snap.accounts[1].num_sponsored = 2; // pool B is sponsored
+        snap.accounts[2].num_sponsoring = 2; // sponsor backs pool B
+        snap.trustlines[0].liquidity_pool_use_count = Some(2);
+
+        // Pool A: unsponsored (backed by holder)
+        snap.pool_share_trustlines[0].pool_id = pool_a_id.clone();
+        snap.pool_share_trustlines[0].sponsor = None;
+
+        // Pool B: sponsored by sponsor
+        let mut pool_b = snap.pool_share_trustlines[0].clone();
+        pool_b.pool_id = pool_b_id.clone();
+        pool_b.sponsor = Some("sponsor".to_owned());
+        snap.pool_share_trustlines.push(pool_b);
+
+        snap.discovery.pool_ids = vec![pool_a_id.clone(), pool_b_id.clone()];
+        snap.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &snap.network_passphrase,
+            snap.ledger_sequence,
+            &snap.discovery.pool_ids,
+        );
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 2);
+
+        // Holder delta: -4 subentries (-2 per pool), -2 sponsored (from pool B), +2 sponsoring (direct reuse for pool A)
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -4);
+        assert_eq!(holder_delta.num_sponsored, -2);
+        assert_eq!(holder_delta.num_sponsoring, 2);
+
+        // Sponsor delta: -2 sponsoring (from pool B release) + 2 sponsoring (direct reuse for pool B CBs) = 0 net
+        let sponsor_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "sponsor")
+            .unwrap();
+        assert_eq!(sponsor_delta.num_sponsoring, 0);
+    }
+
+    #[test]
+    fn test_missing_constituent_credit_trustline_fails_closed() {
+        let mut snap = snapshot(None, true);
+        // Remove the EUR trustline so EUR constituent evidence is missing
+        snap.trustlines.retain(|tl| tl.asset.code != "EUR");
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e
+                    .contains("missing constituent credit trustline for asset EUR:other-issuer")),
+            "expected missing constituent trustline error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_stale_constituent_credit_trustline_fails_closed() {
+        let mut snap = snapshot(None, true);
+        // Make the EUR trustline newer than snapshot ledger
+        let eur_tl = snap
+            .trustlines
+            .iter_mut()
+            .find(|tl| tl.asset.code == "EUR")
+            .unwrap();
+        eur_tl.last_modified_ledger_seq = Some(101);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("is newer than snapshot ledger")),
+            "expected newer than snapshot error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_sequence_number_boundary_overflow_fails_closed() {
+        // Case A: sequence = 0
+        let snap = snapshot(None, true);
+        let mut op_zero = revoke();
+        op_zero.sequence = Some(0);
+        let report_zero = evaluate(&op_zero, &snap);
+        assert_eq!(report_zero.classification, Classification::Inconclusive);
+        assert!(
+            report_zero
+                .errors
+                .iter()
+                .any(|e| e.contains("cannot be represented as a valid Stellar sequence number")),
+            "expected sequence 0 error, got: {:?}",
+            report_zero.errors
+        );
+
+        // Case B: sequence = i64::MAX + 1 (overflows Stellar int64 SequenceNumber)
+        let mut op_overflow = revoke();
+        op_overflow.sequence = Some((i64::MAX as u64) + 1);
+        let report_overflow = evaluate(&op_overflow, &snap);
+        assert_eq!(report_overflow.classification, Classification::Inconclusive);
+        assert!(
+            report_overflow
+                .errors
+                .iter()
+                .any(|e| e.contains("cannot be represented as a valid Stellar sequence number")),
+            "expected sequence overflow error, got: {:?}",
+            report_overflow.errors
+        );
+
+        // Case C: sequence = u64::MAX
+        let mut op_max = revoke();
+        op_max.sequence = Some(u64::MAX);
+        let report_max = evaluate(&op_max, &snap);
+        assert_eq!(report_max.classification, Classification::Inconclusive);
+        assert!(
+            report_max
+                .errors
+                .iter()
+                .any(|e| e.contains("cannot be represented as a valid Stellar sequence number")),
+            "expected sequence max error, got: {:?}",
+            report_max.errors
+        );
+    }
+
+    #[test]
+    fn test_invalid_supplied_tx_source_strkey_fails_closed() {
+        let snap = snapshot(None, true);
+        let mut op = revoke();
+        // Fully supplied context to trigger claimable balance derivation
+        op.tx_source_account = Some("issuer".to_owned()); // "issuer" exists in accounts, but is an invalid 56-char Ed25519 strkey
+        op.sequence = Some(100);
+        op.operation_index = Some(0);
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("invalid transaction source account strkey")),
+            "expected invalid strkey error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_claimable_balance_id_derivation_with_native_asset() {
+        let mut snap = snapshot(None, true);
+        // Pair USD with native XLM in pool-share trustline
+        snap.pool_share_trustlines[0].asset_b = "XLM".to_owned();
+        snap.pool_share_trustlines[0].asset_b_issuer = "native".to_owned();
+        snap.trustlines.retain(|tl| tl.asset.code != "EUR");
+
+        // Supply valid Ed25519 strkey for tx source account
+        let valid_strkey = "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned();
+        snap.accounts[0].id = valid_strkey.clone();
+
+        let mut op = revoke();
+        op.source_account = valid_strkey.clone();
+        op.tx_source_account = Some(valid_strkey);
+        op.asset.issuer = op.source_account.clone();
+        snap.pool_share_trustlines[0].asset_a_issuer = op.source_account.clone();
+        snap.trustlines[0].asset.issuer = op.source_account.clone();
+
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        let cb_xlm = report.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .find(|cb| cb.asset == "XLM")
+            .unwrap();
+        assert!(cb_xlm.claimable_balance_id.is_some());
+        assert!(!cb_xlm.clawback_flag_enabled);
+    }
+
+    #[test]
+    fn test_deterministic_pool_ordering_observable_difference() {
+        // Pool A has first byte 0x0a = 10
+        let pool_a_id =
+            "0a00000000000000000000000000000000000000000000000000000000000000".to_owned();
+        // Pool B has first byte 0x0b = 11, but hex formatted with uppercase 'B'
+        // In ASCII string order: '0' == '0', but 'B' (ASCII 66) < 'a' (ASCII 97), so "0B..." < "0a..."
+        // In canonical 32-byte decoded key order: 0x0a (10) < 0x0b (11), so pool_a < pool_b!
+        let pool_b_id =
+            "0B00000000000000000000000000000000000000000000000000000000000000".to_owned();
+
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].balance_stroops = 100_000_000;
+        snap.accounts[1].subentries = 4;
+        snap.trustlines[0].liquidity_pool_use_count = Some(2);
+        // Insert pool_b first
+        snap.pool_share_trustlines[0].pool_id = pool_b_id.clone();
+        let mut pool_a = snap.pool_share_trustlines[0].clone();
+        pool_a.pool_id = pool_a_id.clone();
+        snap.pool_share_trustlines.push(pool_a);
+        snap.discovery.pool_ids = vec![pool_a_id.clone(), pool_b_id.clone()];
+        snap.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &snap.network_passphrase,
+            snap.ledger_sequence,
+            &snap.discovery.pool_ids,
+        );
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 2);
+        // Canonical 32-byte order puts pool_a (0x0a) before pool_b (0x0b)
+        assert_eq!(
+            report.pool_redemptions[0].pool_id, pool_a_id,
+            "canonical decoded key ordering must place 0x0a before 0x0b, despite ASCII 'B' < 'a'"
+        );
+        assert_eq!(report.pool_redemptions[1].pool_id, pool_b_id);
+    }
+
+    #[test]
+    fn test_incomplete_evidence_blocks_supported_blocked_classification() {
+        // Case A: replacement sponsor has 0 balance, but sponsorship_evidence_complete is false
+        let mut snap_a = snapshot(None, true);
+        snap_a.accounts[3].balance_stroops = 0; // replacement has 0 balance
+        snap_a.sponsorship_evidence_complete = false;
+        snap_a.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op = revoke();
+        op.operation_index = Some(1);
+        let report_a = evaluate(&op, &snap_a);
+        // Must NOT be SupportedBlocked because sponsorship evidence is incomplete
+        assert_eq!(report_a.classification, Classification::Inconclusive);
+
+        // Case B: replacement sponsor has 0 balance, but target credit trustline liquidity_pool_use_count is None
+        let mut snap_b = snapshot(None, true);
+        snap_b.accounts[3].balance_stroops = 0;
+        snap_b.trustlines[0].liquidity_pool_use_count = None;
+        snap_b.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let report_b = evaluate(&op, &snap_b);
+        // Must NOT be SupportedBlocked because discovery evidence is incomplete
+        assert_eq!(report_b.classification, Classification::Inconclusive);
     }
 }

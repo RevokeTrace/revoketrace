@@ -311,6 +311,51 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             }
         };
 
+        // 3b. Additional Constituent Credit Trustlines from Horizon (for constituent clawback evaluation)
+        let mut key_extra_credit_tls = Vec::new();
+        for b in &horizon_acc.balances {
+            if (b.asset_type == "credit_alphanum4" || b.asset_type == "credit_alphanum12")
+                && let (Some(code), Some(iss)) = (&b.asset_code, &b.asset_issuer)
+                && !(code == &asset.code && iss == &asset.issuer)
+                && let Ok(iss_bytes) = decode_account_id(iss)
+            {
+                let iss_acc = AccountId(stellar_xdr::PublicKey::PublicKeyTypeEd25519(
+                    stellar_xdr::Uint256(iss_bytes),
+                ));
+                let extra_asset = if code.len() <= 4 {
+                    let mut code_arr = [0u8; 4];
+                    code_arr[..code.len()].copy_from_slice(code.as_bytes());
+                    stellar_xdr::TrustLineAsset::CreditAlphanum4(stellar_xdr::AlphaNum4 {
+                        asset_code: stellar_xdr::AssetCode4(code_arr),
+                        issuer: iss_acc,
+                    })
+                } else {
+                    let mut code_arr = [0u8; 12];
+                    code_arr[..code.len()].copy_from_slice(code.as_bytes());
+                    stellar_xdr::TrustLineAsset::CreditAlphanum12(stellar_xdr::AlphaNum12 {
+                        asset_code: stellar_xdr::AssetCode12(code_arr),
+                        issuer: iss_acc,
+                    })
+                };
+                let k_extra = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+                    account_id: trustor_acc_id.clone(),
+                    asset: extra_asset,
+                });
+                if let Ok(k_b64) = k_extra.to_xdr_base64(Limits::none())
+                    && !keys_b64.contains(&k_b64)
+                {
+                    key_extra_credit_tls.push((
+                        CreditAsset {
+                            code: code.clone(),
+                            issuer: iss.clone(),
+                        },
+                        k_b64.clone(),
+                    ));
+                    keys_b64.push(k_b64);
+                }
+            }
+        }
+
         // 4. Candidate Pool-Share Trustlines and Liquidity Pools
         for pool_id in &candidate_pool_ids {
             let mut pool_bytes = [0u8; 32];
@@ -680,6 +725,39 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             last_modified_ledger_seq: Some(credit_tl_entry.last_modified_ledger_seq),
         };
 
+        // Parse Extra Constituent Credit Trustlines
+        let mut all_trustlines = vec![credit_tl_state];
+        for (extra_asset, k_b64) in key_extra_credit_tls {
+            if let Some(entry) = entry_map.get(&k_b64)
+                && let Ok(LedgerEntryData::Trustline(tl)) =
+                    LedgerEntryData::from_xdr_base64(&entry.xdr, Limits::none())
+                && tl.account_id == trustor_acc_id
+            {
+                let sponsor = decode_entry_sponsorship(&entry.ext_xdr)?;
+                let use_count = match tl.ext {
+                    stellar_xdr::TrustLineEntryExt::V1(v1) => match v1.ext {
+                        stellar_xdr::TrustLineEntryV1Ext::V2(v2) => {
+                            if v2.liquidity_pool_use_count < 0 {
+                                None
+                            } else {
+                                u32::try_from(v2.liquidity_pool_use_count).ok()
+                            }
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                all_trustlines.push(CreditTrustlineState {
+                    owner: trustor.to_owned(),
+                    asset: extra_asset,
+                    flags: tl.flags,
+                    sponsor,
+                    liquidity_pool_use_count: use_count,
+                    last_modified_ledger_seq: Some(entry.last_modified_ledger_seq),
+                });
+            }
+        }
+
         // Parse Candidate Pools and Cryptographically Verify
         let mut affected_pools = Vec::new();
         let mut matching_pool_ids = Vec::new();
@@ -868,7 +946,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             protocol_version: Some(protocol_version),
             sponsorship_evidence_complete: all_sponsors_verified,
             accounts: vec![trustor_state, issuer_state],
-            trustlines: vec![credit_tl_state],
+            trustlines: all_trustlines,
             pool_share_trustlines: affected_pools,
             sponsorship_handoffs: Vec::new(),
         };
