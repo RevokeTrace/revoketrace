@@ -311,6 +311,87 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             }
         };
 
+        // 3b. Additional Constituent Credit Trustlines from Horizon (for constituent clawback evaluation)
+        let mut key_extra_credit_tls = Vec::new();
+        for b in &horizon_acc.balances {
+            if b.asset_type == "credit_alphanum4" || b.asset_type == "credit_alphanum12" {
+                let code = b.asset_code.as_deref().ok_or_else(|| {
+                    DiscoveryError::ParseError(format!(
+                        "balance of type {} missing asset_code",
+                        b.asset_type
+                    ))
+                })?;
+                let iss = b.asset_issuer.as_deref().ok_or_else(|| {
+                    DiscoveryError::ParseError(format!(
+                        "balance of type {} missing asset_issuer",
+                        b.asset_type
+                    ))
+                })?;
+                if (b.asset_type == "credit_alphanum4" && (code.is_empty() || code.len() > 4))
+                    || (b.asset_type == "credit_alphanum12" && (code.len() <= 4 || code.len() > 12))
+                {
+                    return Err(DiscoveryError::ParseError(format!(
+                        "invalid asset_code length for {}: '{}'",
+                        b.asset_type, code
+                    )));
+                }
+                let iss_bytes = decode_account_id(iss).map_err(|e| {
+                    DiscoveryError::ParseError(format!(
+                        "invalid asset_issuer strkey '{}' from Horizon: {}",
+                        iss, e
+                    ))
+                })?;
+
+                // Skip the target asset being revoked, as it is already requested in step 3a
+                if code == asset.code && iss == asset.issuer {
+                    continue;
+                }
+
+                let iss_acc = AccountId(stellar_xdr::PublicKey::PublicKeyTypeEd25519(
+                    stellar_xdr::Uint256(iss_bytes),
+                ));
+                let extra_tl_asset = if code.len() <= 4 {
+                    let mut code_arr = [0u8; 4];
+                    code_arr[..code.len()].copy_from_slice(code.as_bytes());
+                    stellar_xdr::TrustLineAsset::CreditAlphanum4(stellar_xdr::AlphaNum4 {
+                        asset_code: stellar_xdr::AssetCode4(code_arr),
+                        issuer: iss_acc,
+                    })
+                } else {
+                    let mut code_arr = [0u8; 12];
+                    code_arr[..code.len()].copy_from_slice(code.as_bytes());
+                    stellar_xdr::TrustLineAsset::CreditAlphanum12(stellar_xdr::AlphaNum12 {
+                        asset_code: stellar_xdr::AssetCode12(code_arr),
+                        issuer: iss_acc,
+                    })
+                };
+                let k_extra = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+                    account_id: trustor_acc_id.clone(),
+                    asset: extra_tl_asset.clone(),
+                });
+                let k_b64 = k_extra
+                    .to_xdr_base64(Limits::none())
+                    .map_err(|e| DiscoveryError::ParseError(e.to_string()))?;
+
+                if !keys_b64.contains(&k_b64) {
+                    key_extra_credit_tls.push((
+                        CreditAsset {
+                            code: code.to_owned(),
+                            issuer: iss.to_owned(),
+                        },
+                        extra_tl_asset,
+                        k_b64.clone(),
+                    ));
+                    keys_b64.push(k_b64);
+                }
+            } else if b.asset_type != "native" && b.asset_type != "liquidity_pool_shares" {
+                return Err(DiscoveryError::ParseError(format!(
+                    "unknown Horizon balance asset_type: {}",
+                    b.asset_type
+                )));
+            }
+        }
+
         // 4. Candidate Pool-Share Trustlines and Liquidity Pools
         for pool_id in &candidate_pool_ids {
             let mut pool_bytes = [0u8; 32];
@@ -508,7 +589,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         "trustor account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     stellar_xdr::AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -517,18 +598,25 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         }
                         match v1.ext {
                             stellar_xdr::AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: trustor.to_owned(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -563,7 +651,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         "issuer account contains a negative balance or liability".to_owned(),
                     ));
                 }
-                let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
+                let (buying_liab, selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
                     stellar_xdr::AccountEntryExt::V1(v1) => {
                         if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
                             return Err(DiscoveryError::ParseError(
@@ -572,18 +660,25 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                         }
                         match v1.ext {
                             stellar_xdr::AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.buying as u64,
                                 v1.liabilities.selling as u64,
                                 v2.num_sponsoring,
                                 v2.num_sponsored,
                             ),
-                            _ => (v1.liabilities.selling as u64, 0, 0),
+                            _ => (
+                                v1.liabilities.buying as u64,
+                                v1.liabilities.selling as u64,
+                                0,
+                                0,
+                            ),
                         }
                     }
-                    _ => (0, 0, 0),
+                    _ => (0, 0, 0, 0),
                 };
                 AccountState {
                     id: asset.issuer.clone(),
                     balance_stroops: acc.balance as u64,
+                    buying_liabilities_stroops: buying_liab,
                     selling_liabilities_stroops: selling_liab,
                     subentries: acc.num_sub_entries,
                     num_sponsoring,
@@ -665,6 +760,82 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             liquidity_pool_use_count: Some(use_count),
             last_modified_ledger_seq: Some(credit_tl_entry.last_modified_ledger_seq),
         };
+
+        // Parse Extra Constituent Credit Trustlines
+        let mut all_trustlines = vec![credit_tl_state];
+        for (extra_asset, expected_tl_asset, k_b64) in key_extra_credit_tls {
+            let entry = entry_map.get(&k_b64).ok_or_else(|| {
+                DiscoveryError::StaleIndexerData(format!(
+                    "constituent credit trustline {}:{} returned by Horizon missing on-chain",
+                    extra_asset.code, extra_asset.issuer
+                ))
+            })?;
+
+            let tl_data =
+                LedgerEntryData::from_xdr_base64(&entry.xdr, Limits::none()).map_err(|e| {
+                    DiscoveryError::ParseError(format!(
+                        "constituent credit trustline {}:{} XDR decode error: {}",
+                        extra_asset.code, extra_asset.issuer, e
+                    ))
+                })?;
+
+            let (tl_flags, tl_use_count) = match tl_data {
+                LedgerEntryData::Trustline(tl) => {
+                    if tl.account_id != trustor_acc_id {
+                        return Err(DiscoveryError::WrongTrustor {
+                            expected: trustor.to_owned(),
+                            found: encode_account_id(&crate::discovery::account_id_to_bytes(
+                                &tl.account_id,
+                            )),
+                        });
+                    }
+                    if tl.asset != expected_tl_asset {
+                        return Err(DiscoveryError::ParseError(format!(
+                            "constituent credit trustline asset identity contradicts requested asset {}:{}",
+                            extra_asset.code, extra_asset.issuer
+                        )));
+                    }
+                    if tl.balance < 0 || tl.limit < 0 {
+                        return Err(DiscoveryError::ParseError(
+                            "constituent credit trustline contains a negative balance or limit"
+                                .to_owned(),
+                        ));
+                    }
+                    let use_count = match tl.ext {
+                        stellar_xdr::TrustLineEntryExt::V1(v1) => match v1.ext {
+                            stellar_xdr::TrustLineEntryV1Ext::V2(v2) => {
+                                if v2.liquidity_pool_use_count < 0 {
+                                    return Err(DiscoveryError::ParseError(
+                                        "negative liquidityPoolUseCount in constituent credit trustline"
+                                            .to_owned(),
+                                    ));
+                                }
+                                u32::try_from(v2.liquidity_pool_use_count).ok()
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    (tl.flags, use_count)
+                }
+                _ => {
+                    return Err(DiscoveryError::ParseError(format!(
+                        "expected TrustLineEntry for constituent credit asset {}:{}",
+                        extra_asset.code, extra_asset.issuer
+                    )));
+                }
+            };
+
+            let sponsor = decode_entry_sponsorship(&entry.ext_xdr)?;
+            all_trustlines.push(CreditTrustlineState {
+                owner: trustor.to_owned(),
+                asset: extra_asset,
+                flags: tl_flags,
+                sponsor,
+                liquidity_pool_use_count: tl_use_count,
+                last_modified_ledger_seq: Some(entry.last_modified_ledger_seq),
+            });
+        }
 
         // Parse Candidate Pools and Cryptographically Verify
         let mut affected_pools = Vec::new();
@@ -854,7 +1025,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             protocol_version: Some(protocol_version),
             sponsorship_evidence_complete: all_sponsors_verified,
             accounts: vec![trustor_state, issuer_state],
-            trustlines: vec![credit_tl_state],
+            trustlines: all_trustlines,
             pool_share_trustlines: affected_pools,
             sponsorship_handoffs: Vec::new(),
         };
@@ -1149,6 +1320,16 @@ mod tests {
         code: &str,
         use_count: Option<i32>,
     ) -> String {
+        make_credit_tl_xdr_with_flags(owner, issuer, code, use_count, 1)
+    }
+
+    fn make_credit_tl_xdr_with_flags(
+        owner: AccountId,
+        issuer: AccountId,
+        code: &str,
+        use_count: Option<i32>,
+        flags: u32,
+    ) -> String {
         let mut arr = [0u8; 4];
         arr[..code.len()].copy_from_slice(code.as_bytes());
         let asset = TrustLineAsset::CreditAlphanum4(AlphaNum4 {
@@ -1175,7 +1356,7 @@ mod tests {
             asset,
             balance: 500_000_000,
             limit: i64::MAX,
-            flags: 1, // AUTHORIZED
+            flags,
             ext,
         });
         entry.to_xdr_base64(Limits::none()).unwrap()
@@ -1329,7 +1510,7 @@ mod tests {
         .unwrap();
 
         let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
-            liquidity_pool_id: PoolId(pool_hash),
+            liquidity_pool_id: PoolId(pool_hash.clone()),
         })
         .to_xdr_base64(Limits::none())
         .unwrap();
@@ -1414,9 +1595,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset,
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -1456,6 +1638,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -1465,6 +1648,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -1687,7 +1871,7 @@ mod tests {
         .to_xdr_base64(Limits::none())
         .unwrap();
         let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
-            liquidity_pool_id: PoolId(pool_hash),
+            liquidity_pool_id: PoolId(pool_hash.clone()),
         })
         .to_xdr_base64(Limits::none())
         .unwrap();
@@ -2037,9 +2221,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -2088,6 +2273,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2097,6 +2283,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2151,9 +2338,10 @@ mod tests {
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
             trustor: TRUSTOR_STRKEY.to_owned(),
-            sequence: 1,
-            operation_index: 0,
+            sequence: Some(1),
+            operation_index: Some(0),
             asset: credit_asset_flutter(),
             before_flags: AUTHORIZED_FLAG,
             after_flags: 0,
@@ -2281,6 +2469,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2290,6 +2479,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2340,6 +2530,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2349,6 +2540,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2792,6 +2984,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2801,6 +2994,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2851,6 +3045,7 @@ mod tests {
                 AccountState {
                     id: TRUSTOR_STRKEY.to_owned(),
                     balance_stroops: 100_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 4,
                     num_sponsoring: 0,
@@ -2860,6 +3055,7 @@ mod tests {
                 AccountState {
                     id: ISSUER_STRKEY.to_owned(),
                     balance_stroops: 500_000_000,
+                    buying_liabilities_stroops: 0,
                     selling_liabilities_stroops: 0,
                     subentries: 0,
                     num_sponsoring: 0,
@@ -2920,5 +3116,416 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    fn setup_mock_with_constituent_sdk(
+        constituent_entry_xdr: String,
+        constituent_key_override: Option<String>,
+        constituent_ext_xdr: Option<&str>,
+        omit_constituent_entry: bool,
+    ) -> (AuthoritativeEvidenceAdapter<MockTransport>, CreditAsset) {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"SDK\0"),
+                issuer: other_issuer_id(),
+            }),
+            30,
+        );
+        let mut mock = MockTransport::new();
+        mock.set_post_method(
+            "getLatestLedger",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "id": MOCK_LEDGER_HASH,
+                    "protocolVersion": 29,
+                    "sequence": 5000,
+                    "headerXdr": make_header_xdr(29, 5000, 5_000_000)
+                }
+            })
+            .to_string()),
+        );
+
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [
+                    { "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex },
+                    { "asset_type": "credit_alphanum4", "asset_code": "SDK", "asset_issuer": OTHER_ISSUER_STRKEY }
+                ]
+            }).to_string()),
+        );
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash.clone()),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let mut sdk_arr = [0u8; 4];
+        sdk_arr[..3].copy_from_slice(b"SDK");
+        let k_extra_sdk = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(sdk_arr),
+                issuer: other_issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let ext_xdr = constituent_ext_xdr.unwrap_or("AAAAAA==");
+        let actual_sdk_key = constituent_key_override.unwrap_or_else(|| k_extra_sdk.clone());
+
+        let mut entries = vec![
+            serde_json::json!({ "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" }),
+            serde_json::json!({ "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" }),
+            serde_json::json!({ "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" }),
+            serde_json::json!({ "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool_hash, 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" }),
+            serde_json::json!({ "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" }),
+        ];
+
+        if !omit_constituent_entry {
+            entries.push(serde_json::json!({
+                "key": actual_sdk_key,
+                "xdr": constituent_entry_xdr,
+                "lastModifiedLedgerSeq": 4950,
+                "extXdr": ext_xdr
+            }));
+        }
+
+        mock.set_post_method(
+            "getLedgerEntries",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "entries": entries, "latestLedger": 5000 }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let asset = CreditAsset {
+            code: "FLUT".to_owned(),
+            issuer: ISSUER_STRKEY.to_owned(),
+        };
+        (adapter, asset)
+    }
+
+    #[test]
+    fn test_adversarial_24_constituent_trustline_incorrect_asset_code() {
+        // Returned constituent trustline has code "EUR" instead of requested "SDK"
+        let wrong_code_xdr = make_credit_tl_xdr(trustor_id(), other_issuer_id(), "EUR", Some(1));
+        let (adapter, asset) = setup_mock_with_constituent_sdk(wrong_code_xdr, None, None, false);
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .unwrap_err();
+        match err {
+            DiscoveryError::ParseError(ref msg) => {
+                assert!(
+                    msg.contains(
+                        "constituent credit trustline asset identity contradicts requested asset"
+                    ),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected ParseError for wrong asset code, got: {:?}", other),
+        }
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_25_constituent_trustline_incorrect_issuer() {
+        // Returned constituent trustline has issuer_id() instead of other_issuer_id()
+        let wrong_issuer_xdr = make_credit_tl_xdr(trustor_id(), issuer_id(), "SDK", Some(1));
+        let (adapter, asset) = setup_mock_with_constituent_sdk(wrong_issuer_xdr, None, None, false);
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .unwrap_err();
+        match err {
+            DiscoveryError::ParseError(ref msg) => {
+                assert!(
+                    msg.contains(
+                        "constituent credit trustline asset identity contradicts requested asset"
+                    ),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!(
+                "expected ParseError for wrong asset issuer, got: {:?}",
+                other
+            ),
+        }
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_26_constituent_trustline_malformed_xdr() {
+        let malformed_xdr = "AAAAA_NOT_VALID_BASE64_XDR_DATA@@@@".to_owned();
+        let (adapter, asset) = setup_mock_with_constituent_sdk(malformed_xdr, None, None, false);
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .unwrap_err();
+        match err {
+            DiscoveryError::ParseError(ref msg) => {
+                assert!(
+                    msg.contains("XDR decode error"),
+                    "unexpected error message: {}",
+                    msg
+                );
+            }
+            other => panic!("expected ParseError for malformed XDR, got: {:?}", other),
+        }
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_27_constituent_trustline_incorrect_owner() {
+        // Returned constituent trustline is owned by other_issuer_id() instead of trustor_id()
+        let wrong_owner_xdr =
+            make_credit_tl_xdr(other_issuer_id(), other_issuer_id(), "SDK", Some(1));
+        let (adapter, asset) = setup_mock_with_constituent_sdk(wrong_owner_xdr, None, None, false);
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .unwrap_err();
+        match err {
+            DiscoveryError::WrongTrustor {
+                ref expected,
+                ref found,
+            } => {
+                assert_eq!(expected, TRUSTOR_STRKEY);
+                assert_eq!(found, OTHER_ISSUER_STRKEY);
+            }
+            other => panic!(
+                "expected WrongTrustor for wrong trustline owner, got: {:?}",
+                other
+            ),
+        }
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_28_constituent_trustline_missing_entry() {
+        // RPC response omits constituent trustline entry entirely
+        let (adapter, asset) = setup_mock_with_constituent_sdk(String::new(), None, None, true);
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .unwrap_err();
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_29_constituent_trustline_valid_clawback_flag() {
+        // Case A: Valid constituent trustline with clawback enabled (flags: 9 = AUTHORIZED | CLAWBACK_ENABLED)
+        let valid_clawback_xdr = make_credit_tl_xdr_with_flags(
+            trustor_id(),
+            other_issuer_id(),
+            "SDK",
+            Some(1),
+            crate::AUTHORIZED_FLAG | crate::TRUSTLINE_CLAWBACK_ENABLED_FLAG,
+        );
+        let (adapter_cb, asset) =
+            setup_mock_with_constituent_sdk(valid_clawback_xdr, None, None, false);
+        let snapshot_cb = adapter_cb
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .expect("should acquire valid evidence with constituent trustline");
+
+        // Verify constituent trustline was successfully parsed into snapshot
+        let sdk_tl = snapshot_cb
+            .trustlines
+            .iter()
+            .find(|tl| tl.asset.code == "SDK" && tl.asset.issuer == OTHER_ISSUER_STRKEY)
+            .expect("SDK constituent trustline should be in snapshot");
+        assert_eq!(
+            sdk_tl.flags,
+            crate::AUTHORIZED_FLAG | crate::TRUSTLINE_CLAWBACK_ENABLED_FLAG
+        );
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: ISSUER_STRKEY.to_owned(),
+            tx_source_account: None,
+            sequence: None,
+            operation_index: None,
+            trustor: TRUSTOR_STRKEY.to_owned(),
+            asset: asset.clone(),
+            before_flags: crate::AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+        let report_cb = crate::evaluate(&op, &snapshot_cb);
+        assert_eq!(report_cb.classification, Classification::UnverifiedForecast);
+        assert_eq!(report_cb.pool_redemptions.len(), 1);
+        let sdk_cb_forecast = report_cb.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .find(|cb| cb.asset == "SDK")
+            .expect("SDK claimable balance forecast must exist");
+        assert!(
+            sdk_cb_forecast.clawback_flag_enabled,
+            "SDK claimable balance must have clawback enabled"
+        );
+
+        // Case B: Valid constituent trustline with clawback disabled (flags: 1 = AUTHORIZED only)
+        let valid_no_cb_xdr = make_credit_tl_xdr_with_flags(
+            trustor_id(),
+            other_issuer_id(),
+            "SDK",
+            Some(1),
+            crate::AUTHORIZED_FLAG,
+        );
+        let (adapter_no_cb, _) =
+            setup_mock_with_constituent_sdk(valid_no_cb_xdr, None, None, false);
+        let snapshot_no_cb = adapter_no_cb
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .expect("should acquire valid evidence with constituent trustline");
+        let report_no_cb = crate::evaluate(&op, &snapshot_no_cb);
+        assert_eq!(
+            report_no_cb.classification,
+            Classification::UnverifiedForecast
+        );
+        let sdk_no_cb_forecast = report_no_cb.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .find(|cb| cb.asset == "SDK")
+            .expect("SDK claimable balance forecast must exist");
+        assert!(
+            !sdk_no_cb_forecast.clawback_flag_enabled,
+            "SDK claimable balance must have clawback disabled"
+        );
+    }
+
+    #[test]
+    fn test_adversarial_30_invalid_horizon_balance_identity_rejected() {
+        let mut mock = MockTransport::new();
+        mock.set_post_method(
+            "getLatestLedger",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "id": MOCK_LEDGER_HASH,
+                    "protocolVersion": 29,
+                    "sequence": 5000,
+                    "headerXdr": make_header_xdr(29, 5000, 5_000_000)
+                }
+            })
+            .to_string()),
+        );
+
+        // Case A: Missing asset_code on credit balance
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [
+                    { "asset_type": "credit_alphanum4", "asset_issuer": OTHER_ISSUER_STRKEY }
+                ]
+            })
+            .to_string()),
+        );
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock.clone(),
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err_missing_code = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err_missing_code, DiscoveryError::ParseError(_)));
+        assert_eq!(
+            err_missing_code.into_classification(),
+            Classification::Inconclusive
+        );
+
+        // Case B: Invalid issuer StrKey on credit balance
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [
+                    { "asset_type": "credit_alphanum4", "asset_code": "SDK", "asset_issuer": "INVALID_STRKEY_BOGUS" }
+                ]
+            }).to_string()),
+        );
+        let adapter_bad_key = AuthoritativeEvidenceAdapter::new(
+            mock.clone(),
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err_bad_key = adapter_bad_key
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err_bad_key, DiscoveryError::ParseError(_)));
+        assert_eq!(
+            err_bad_key.into_classification(),
+            Classification::Inconclusive
+        );
+
+        // Case C: Unknown balance asset_type
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [
+                    { "asset_type": "unknown_soroban_sac_v3" }
+                ]
+            })
+            .to_string()),
+        );
+        let adapter_unknown_type = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err_unknown_type = adapter_unknown_type
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err_unknown_type, DiscoveryError::ParseError(_)));
+        assert_eq!(
+            err_unknown_type.into_classification(),
+            Classification::Inconclusive
+        );
     }
 }

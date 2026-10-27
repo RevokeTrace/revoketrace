@@ -177,9 +177,10 @@ fn main() {
             let op = OperationSpec {
                 operation: "SetTrustLineFlags".to_owned(),
                 source_account: asset.issuer.clone(),
+                tx_source_account: Some(asset.issuer.clone()),
                 trustor: trustor.to_owned(),
-                sequence: 1,
-                operation_index: 0,
+                sequence: Some(1),
+                operation_index: Some(0),
                 asset: asset.clone(),
                 before_flags: AUTHORIZED_FLAG,
                 after_flags: 0,
@@ -218,6 +219,21 @@ fn main() {
                     r.withdrawn_b_stroops,
                     r.claimable_balances.len()
                 );
+                for (j, cb) in r.claimable_balances.iter().enumerate() {
+                    println!(
+                        "        ({}) Asset: {}, Amount: {} stroops, Sponsor: {}, ID: {:?}, Clawback: {}",
+                        j + 1,
+                        cb.asset,
+                        cb.amount_stroops,
+                        cb.sponsor,
+                        cb.claimable_balance_id,
+                        cb.clawback_flag_enabled
+                    );
+                    assert!(
+                        cb.claimable_balance_id.is_some(),
+                        "claimable balance ID should be derived with complete operation context"
+                    );
+                }
             }
         }
         Err(err) => {

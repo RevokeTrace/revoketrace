@@ -45,6 +45,17 @@
       "sponsor": null,
       "liquidity_pool_use_count": 2,
       "last_modified_ledger_seq": 5413920
+    },
+    {
+      "owner": "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB",
+      "asset": {
+        "code": "SDK",
+        "issuer": "GA5Q3FBUPYK4T3BQDILVTDFN2TCLLNBDYABMFZRXTE2BLXP5CZXOQFWM"
+      },
+      "flags": 1,
+      "sponsor": null,
+      "liquidity_pool_use_count": 1,
+      "last_modified_ledger_seq": 5413920
     }
   ],
   "pool_share_trustlines": [
