@@ -13,6 +13,12 @@ use stellar_xdr::{
     ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
 };
 
+pub mod discovery;
+pub use discovery::{
+    CurlTransport, DiscoveryError, DiscoveryPipeline, HorizonAccountResponse, HorizonBalance,
+    HttpTransport, MockTransport, decode_account_id, encode_account_id,
+};
+
 pub const AUTHORIZED_FLAG: u32 = 1;
 pub const AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG: u32 = 2;
 
@@ -189,7 +195,13 @@ pub struct SponsorshipHandoff {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DiscoverySource {
     SyntheticFixture,
-    LedgerCapture { endpoint: String },
+    LedgerCapture {
+        endpoint: String,
+    },
+    TwoTierDiscovery {
+        horizon_endpoint: String,
+        rpc_endpoint: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -218,7 +230,11 @@ pub struct Snapshot {
     pub ledger_sequence: u32,
     pub entries_ledger_sequence: u32,
     pub discovery: DiscoveryProof,
-    pub base_reserve_stroops: u64,
+    #[serde(default)]
+    pub base_reserve_stroops: Option<u64>,
+    /// False when the source cannot prove sponsorship identities and counters.
+    #[serde(default)]
+    pub sponsorship_evidence_complete: bool,
     pub accounts: Vec<AccountState>,
     pub trustlines: Vec<CreditTrustlineState>,
     pub pool_share_trustlines: Vec<PoolShareState>,
@@ -348,8 +364,23 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
     {
         errors.push("ledger capture endpoint is empty".to_owned());
     }
-    if snapshot.base_reserve_stroops == 0 {
-        errors.push("base reserve must be positive".to_owned());
+    if let DiscoverySource::TwoTierDiscovery {
+        horizon_endpoint,
+        rpc_endpoint,
+    } = &snapshot.discovery.source
+    {
+        if horizon_endpoint.trim().is_empty() {
+            errors.push("discovery horizon endpoint is empty".to_owned());
+        }
+        if rpc_endpoint.trim().is_empty() {
+            errors.push("discovery rpc endpoint is empty".to_owned());
+        }
+    }
+    if snapshot
+        .base_reserve_stroops
+        .is_none_or(|reserve| reserve == 0)
+    {
+        errors.push("base reserve is unavailable or non-positive".to_owned());
     }
     if operation.operation != "SetTrustLineFlags" && operation.operation != "AllowTrust" {
         errors.push(format!("unsupported operation {}", operation.operation));
@@ -594,6 +625,10 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     } else {
         None
     };
+    let sponsorship_warning = (!snapshot.sponsorship_evidence_complete).then_some(
+        "sponsorship identities and reserve counters are incomplete; forecast is not a complete preflight"
+            .to_owned(),
+    );
 
     if transition != Transition::ForcedPoolRedemption {
         let mut warnings = vec![
@@ -601,6 +636,9 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                 .to_owned(),
         ];
         if let Some(w) = coverage_warning {
+            warnings.push(w);
+        }
+        if let Some(w) = sponsorship_warning {
             warnings.push(w);
         }
         return Report {
@@ -783,11 +821,17 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                 after.id
             ));
         }
-        match minimum_balance(&after, snapshot.base_reserve_stroops).and_then(|minimum| {
-            minimum
-                .checked_add(u128::from(after.selling_liabilities_stroops))
-                .ok_or_else(|| format!("reserve and liabilities overflow for account {}", after.id))
-        }) {
+        match snapshot
+            .base_reserve_stroops
+            .ok_or_else(|| "base reserve is unavailable".to_owned())
+            .and_then(|base_reserve| minimum_balance(&after, base_reserve))
+            .and_then(|minimum| {
+                minimum
+                    .checked_add(u128::from(after.selling_liabilities_stroops))
+                    .ok_or_else(|| {
+                        format!("reserve and liabilities overflow for account {}", after.id)
+                    })
+            }) {
             Ok(minimum) if u128::from(after.balance_stroops) >= minimum => {}
             Ok(minimum) => errors.push(format!(
                 "{} would be below reserve: balance {}, minimum {}",
@@ -808,6 +852,9 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         "forecast is internally consistent but discovery is not independently verified".to_owned(),
     ];
     if let Some(w) = coverage_warning {
+        warnings.push(w);
+    }
+    if let Some(w) = sponsorship_warning {
         warnings.push(w);
     }
     Report {
@@ -870,7 +917,8 @@ mod tests {
                 },
                 coverage: DiscoveryCoverage::Unproven,
             },
-            base_reserve_stroops: 5_000_000,
+            base_reserve_stroops: Some(5_000_000),
+            sponsorship_evidence_complete: true,
             accounts: vec![
                 AccountState {
                     id: "issuer".to_owned(),
