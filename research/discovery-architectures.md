@@ -72,15 +72,36 @@ We investigated four architectural approaches for discovering liquidity-pool sha
 
 ---
 
-## 4. Architectural Decision Conclusion
+## 4. Historical Ledger Consistency Analysis and State Drift
 
-No single existing service satisfies both:
+A core requirement of trustworthy preflight analysis is verifying that all evaluated ledger entries represent a mutually consistent snapshot at an exact ledger sequence $L$.
+
+### 4.1 Stellar RPC `getLedgerEntries` Lacks Historical Query Support
+Empirical testing on live testnet RPC (`https://soroban-testnet.stellar.org`) confirms:
+- The JSON-RPC method `getLedgerEntries` accepts only `{"keys": [...]}`. Passing a `ledger` sequence parameter is silently ignored by the endpoint.
+- Responses always return the node's current ledger tip (`latestLedger`).
+- Stellar RPC nodes do not maintain a historical index of past ledger entry versions; state is overwritten as new ledgers close.
+
+### 4.2 Why `lastModifiedLedgerSeq <= L` Does Not Prove State at Ledger $L$
+It is a logical error to assume that observing `lastModifiedLedgerSeq <= L` on a live tip read proves the entry's value at historical ledger $L$:
+1. **Unobserved Post-L Deletion**: If an entry existed at ledger $L$ and was deleted at ledger $L + 10$, a live query at $L + 100$ will return null. The preflight engine would incorrectly conclude the entry never existed at $L$.
+2. **Post-L Mutation Overwrites**: If an entry was modified at ledger $L - 5$ and modified again at ledger $L + 5$, a live query returns the state as of $L + 5$. The historical state at $L$ is permanently lost to RPC.
+3. **Multi-Request Ledger Drift**: Because Stellar ledgers close every ~5 seconds, querying entries across multiple RPC calls exposes the preflight tool to inter-request ledger closes. Entry A might be retrieved at ledger $T$, while Entry B is retrieved at ledger $T + 1$ following an intervening state change.
+
+### 4.3 Atomic Consistency Bounded to Current Tip
+Single-batch retrieval (up to 200 keys in a single `getLedgerEntries` call) guarantees atomic consistency **only for the current live tip** (`latestLedger`). It provides zero consistency guarantees for historical ledgers $L < \text{latestLedger}$.
+
+---
+
+## 5. Architectural Decision Conclusion
+
+No single existing public service satisfies both:
 1. **Lightweight, fast execution** suitable for a CLI preflight tool, AND
-2. **Authoritative, tamper-evident completeness proof** backed by Stellar protocol invariants.
+2. **Authoritative, tamper-evident completeness proof** backed by Stellar protocol invariants at an arbitrary historical ledger.
 
 Therefore, an isolated, monolithic approach fails:
-- Relying on RPC alone fails because RPC cannot enumerate.
-- Relying on Horizon alone fails because Horizon cannot prove completeness.
-- Relying on Captive Core alone fails because the infrastructure footprint is prohibitive.
+- Relying on RPC alone fails because RPC cannot enumerate and cannot query historical state.
+- Relying on Horizon alone fails because Horizon cannot prove completeness and drops `liquidityPoolUseCount`.
+- Relying on Captive Core alone fails because the infrastructure footprint (>40GB state) is prohibitive for a CLI tool.
 
-The only viable path is a **Two-Tier Verifiable Discovery Architecture**, detailed in [`selected-architecture.md`](selected-architecture.md).
+The **Two-Tier Verifiable Discovery Architecture** (detailed in [`selected-architecture.md`](selected-architecture.md)) provides a mathematically sound design, but because current public endpoints cannot serve historical point-in-time state, **live discovery completeness is classified as PLAUSIBLE BUT UNPROVEN**.

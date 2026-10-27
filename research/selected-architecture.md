@@ -81,9 +81,16 @@ Per the specification, we explicitly categorize discovery capabilities across St
 
 | Category | Definition | Architectural Status |
 | --- | --- | --- |
-| **1. Complete discovery demonstrated** | Reproducible live execution establishing mathematical completeness against an on-chain ledger invariant. | **Demonstrated** for the **Two-Tier Architecture** (Testnet ledger 5413920, account `GAPOZN3...`, asset `FLUTTER`, 2 pools verified against `liquidityPoolUseCount == 2`). |
-| **2. Complete discovery technically plausible but not demonstrated** | Architectures that could theoretically achieve completeness but require unverified infrastructure. | **Captive-Core standalone replay** and **History Archive BucketList scanner** (plausible via full-node execution, but unproven in lightweight CLI). |
-| **3. Complete discovery unavailable or unsupported** | Methods incapable of providing completeness guarantees. | **Stellar RPC alone** (lacks enumeration) and **Horizon API alone** (drops `liquidityPoolUseCount`, unverified off-chain DB). |
+| **1. Complete discovery demonstrated** | Reproducible live execution establishing mathematical completeness against an on-chain ledger invariant at an arbitrary historical ledger. | **Not demonstrated on live network**. Stored fixture replay demonstrates the offline mathematical proof, but live network discovery at an arbitrary historical ledger remains unproven due to public API limitations. |
+| **2. Complete discovery technically plausible but not demonstrated** | Architectures that can theoretically achieve completeness but require unverified infrastructure or full-node execution. | **Two-Tier Architecture on Live Tip** and **Captive-Core standalone replay** (plausible via single-batch tip read or history archive replay, but unproven for arbitrary historical queries over public RPC). |
+| **3. Complete discovery unavailable or unsupported** | Methods incapable of providing completeness guarantees. | **Stellar RPC alone** (lacks enumeration) and **Horizon API alone** (drops `liquidityPoolUseCount`, unverified off-chain DB, ignores ledger parameters). |
+
+### Overall Feasibility Verdict: DISCOVERY FEASIBILITY PLAUSIBLE BUT UNPROVEN
+
+While the in-protocol `liquidityPoolUseCount` invariant and canonical parameter derivation provide a rigorous mathematical basis for verifying discovery completeness, live discovery remains **PLAUSIBLE BUT UNPROVEN** because:
+1. Public Stellar RPC does not support point-in-time querying at arbitrary historical ledgers.
+2. Horizon does not expose the required `liquidityPoolUseCount` counter and lacks cryptographic inclusion proofs.
+3. Achieving live completeness requires either accepting single-batch tip queries (bounded by 200 keys) or operating a heavyweight Captive-Core instance.
 
 ---
 

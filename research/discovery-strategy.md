@@ -53,14 +53,14 @@ Return `INCONCLUSIVE`, never `UNVERIFIED_FORECAST` or `SUPPORTED_SAFE`, when any
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository now implements and demonstrates the Phase 1B two-tier discovery verification:
+The current repository implements and evaluates the Phase 1B two-tier discovery verification:
 - The target credit trustline's `liquidityPoolUseCount` is checked against discovered pool-share trustlines.
 - Pool IDs are cryptographically derived from canonical constant-product parameters (`derive_constant_product_pool_id`).
-- Live feasibility is demonstrated in [`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json) and [`examples/live_discovery.rs`](../examples/live_discovery.rs) on Stellar Testnet at ledger 5413920.
+- Feasibility is evaluated using an offline recorded network-response fixture ([`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json)) and executable verification demonstration ([`examples/live_discovery.rs`](../examples/live_discovery.rs)) representing Stellar Testnet ledger 5413920, with live network completeness explicitly classified as unproven.
 - Deep research findings are documented in:
   - [`authoritative-core-discovery.md`](authoritative-core-discovery.md): Stellar Core internal discovery mechanics and protocol invariants.
   - [`discovery-architectures.md`](discovery-architectures.md): Comparison of RPC, Horizon, Captive Core, and Indexers.
   - [`selected-architecture.md`](selected-architecture.md): Two-Tier Verifiable Discovery Architecture and mathematical completeness proof.
-  - [`discovery-feasibility-proof.md`](discovery-feasibility-proof.md): Live testnet verification commands, inputs, and results.
+  - [`discovery-feasibility-proof.md`](discovery-feasibility-proof.md): Recorded network fixture evaluation, live RPC constraints, and failure invariants.
 
-Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`.
+Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`. Live network completeness remains classified as **PLAUSIBLE BUT UNPROVEN**.
