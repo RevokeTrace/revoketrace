@@ -53,4 +53,14 @@ Return `INCONCLUSIVE`, never `UNVERIFIED_FORECAST` or `SUPPORTED_SAFE`, when any
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository has no capture adapter and therefore makes no live complete-discovery claim. The evaluator requires a manifest whose pool IDs exactly match the supplied pool-share entries, whose ledger target matches the snapshot, and whose SHA-256 digest matches the canonical manifest material. These checks establish internal consistency only; they cannot prove that an omitted pool-share entry was ever discovered. Synthetic fixtures and caller-supplied `LedgerCapture` metadata therefore produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. A future trusted capture adapter would need independently auditable enumeration coverage, entry hashes, ledger anchoring, and reconciliation before any verified-safe outcome could exist.
+The current repository now implements and demonstrates the Phase 1B two-tier discovery verification:
+- The target credit trustline's `liquidityPoolUseCount` is checked against discovered pool-share trustlines.
+- Pool IDs are cryptographically derived from canonical constant-product parameters (`derive_constant_product_pool_id`).
+- Live feasibility is demonstrated in [`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json) and [`examples/live_discovery.rs`](../examples/live_discovery.rs) on Stellar Testnet at ledger 5413920.
+- Deep research findings are documented in:
+  - [`authoritative-core-discovery.md`](authoritative-core-discovery.md): Stellar Core internal discovery mechanics and protocol invariants.
+  - [`discovery-architectures.md`](discovery-architectures.md): Comparison of RPC, Horizon, Captive Core, and Indexers.
+  - [`selected-architecture.md`](selected-architecture.md): Two-Tier Verifiable Discovery Architecture and mathematical completeness proof.
+  - [`discovery-feasibility-proof.md`](discovery-feasibility-proof.md): Live testnet verification commands, inputs, and results.
+
+Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`.
