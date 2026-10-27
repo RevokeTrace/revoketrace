@@ -136,5 +136,168 @@ This audit inspects the merged codebase (`src/lib.rs`, `src/discovery.rs`, `src/
    - Check constituent asset trustline clawback flag and propagate to `ClaimableBalanceForecast`.
 5. **Deterministic Pool Key Ordering:**
    - Sort affected pools canonically prior to redemption.
+   - Match Stellar Core `std::sort` behavior.
 6. **Comprehensive Negative & Edge-Case Test Suite:**
    - Implement tests covering all 17 target failure modes specified in the requirements.
+
+---
+
+## 5. Protocol Verification and Accounting Rule Mapping
+
+The following table records the protocol verification for each accounting rule implemented in Phase 4B:
+
+### Rule 1: Account Minimum Balance and Liabilities
+- **Protocol Source:** Stellar Core `AccountEntry.cpp`, CAP-0003, CAP-0033.
+- **Applicable Protocol Version:** $\ge 14$ (sponsorship), $\ge 18$ (CAP-0038).
+- **Input Requirements:** `subentries: u32`, `num_sponsoring: u32`, `num_sponsored: u32`, `base_reserve_stroops: u64`, `balance_stroops: i64`, `selling_liabilities_stroops: i64`, `buying_liabilities_stroops: i64`.
+- **State Transition:**
+  - $\text{units} = 2 + \text{subentries} + \text{num\_sponsoring} - \text{num\_sponsored}$.
+  - $\text{min\_balance} = \text{units} \times \text{base\_reserve}$.
+  - Post-operation solvency check: $\text{balance} \ge \text{min\_balance} + \text{selling\_liabilities}$.
+- **Failure Conditions:**
+  - Counter underflow/overflow: fails closed as `Classification::Inconclusive`.
+  - Selling liabilities exceed balance: fails closed as `Classification::Inconclusive`.
+  - Buying liabilities + balance exceeds `i64::MAX`: fails closed as `Classification::Inconclusive`.
+  - Post-operation balance below required minimum balance: fails closed as `Classification::SupportedBlocked` (`SET_TRUST_LINE_FLAGS_LOW_RESERVE`).
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_6_insufficient_minimum_balance_on_trustor`
+  - `test_target_failure_mode_7_invalid_sponsorship_counters`
+  - `test_target_failure_mode_9_buying_and_selling_liabilities`
+  - `test_target_failure_mode_10_integer_overflow_and_underflow`
+
+### Rule 2: Sponsored Pool-Share Trustline Removal
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:1675-1685` (`removeOffersAndPoolShareTrustLines`), CAP-0038, CAP-0033.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** `PoolShareTrustlineState` (with optional `sponsor`), owner `AccountState`, sponsor `AccountState` (if sponsored).
+- **State Transition:**
+  - If unsponsored: owner `subentries -= 2`.
+  - If sponsored: owner `subentries -= 2`, owner `num_sponsored -= 2`, sponsor `num_sponsoring -= 2`.
+  - Target credit trustline `liquidityPoolUseCount` decrements by 1.
+- **Failure Conditions:**
+  - Missing sponsor account in snapshot: fails closed as `Classification::Inconclusive`.
+  - Sponsor counter does not account for two-reserve trustline: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_1_unsponsored_redemption`
+  - `test_target_failure_mode_2_sponsored_pool_share_trustline_removal`
+  - `test_target_failure_mode_8_missing_sponsor_account`
+
+### Rule 3: Forced Liquidity Pool Redemption
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:1690-1790`, CAP-0038 (`redeemIntoClaimableBalance`, `decrementPoolSharesTrustLineCount`).
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** `LiquidityPoolEntry`, owner pool shares, total pool shares, constituent asset reserves.
+- **State Transition:**
+  - Integer redemption via floor division: $\text{amount} = \lfloor \text{shares} \times \text{reserve} / \text{total\_shares} \rfloor$.
+  - Pool share count and pool entries updated deterministically.
+- **Failure Conditions:**
+  - Total pool shares is zero: fails closed as `Classification::Inconclusive`.
+  - Reserve multiplication overflow: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_1_unsponsored_redemption`
+  - `test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation`
+  - `exact_integer_redemption_uses_floor`
+
+### Rule 4: Claimable Balance Creation & Clawback Flag Inheritance
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:1718-1730`, CAP-0035, CAP-0038.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** Constituent redemption amount $> 0$, asset issuer $\ne$ owner, constituent asset trustline flags.
+- **State Transition:**
+  - Creates a claimable balance for each non-issuer constituent asset with non-zero payout.
+  - If constituent asset trustline has `TRUSTLINE_CLAWBACK_ENABLED_FLAG`, sets `clawback_flag_enabled: true` on the created claimable balance forecast.
+- **Failure Conditions:**
+  - Contradictory constituent assets or incomplete asset identity: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_clawback_flag_propagation`
+  - `test_target_failure_mode_1_unsponsored_redemption`
+
+### Rule 5: Claimable Balance Sponsorship and Reserve Reuse
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:1735-1785`, CAP-0038, CAP-0033.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** Pool-share backer (`pool.sponsor.unwrap_or(pool.owner)`), active `SponsorshipHandoff` entries.
+- **State Transition:**
+  - **Non-Sandwich (Direct Sponsorship):** Backer sponsors CB directly via `establishEntrySponsorship`. Reuses freed reserves from deleted pool share without requiring surplus balance above minimum balance. Backer `num_sponsoring += num_cb` (if trustor, net subentry change $-2 + 2$ balances out).
+  - **Sandwich (Replacement Sponsor):** Replacement sponsor $C$ sponsors CB via `createEntryWithPossibleSponsorship`. $C$ did not hold the deleted pool share, so $C$ must have sufficient balance ($\text{balance} \ge \text{min\_balance} + \text{selling\_liabilities}$) and counter headroom ($\text{num\_sponsoring} + \text{subentries} + \text{num\_cb} \le \text{UINT32\_MAX}$). $C.\text{num\_sponsoring} += \text{num\_cb}$.
+- **Failure Conditions:**
+  - Sandwich sponsor has insufficient balance: fails closed as `Classification::SupportedBlocked` (`SET_TRUST_LINE_FLAGS_LOW_RESERVE`).
+  - Counter limit exceeded: fails closed as `Classification::SupportedBlocked` (`opTOO_MANY_SPONSORING`).
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_3_sponsored_claimable_balance_creation_in_sandwich`
+  - `test_target_failure_mode_5_sponsor_reserve_exhaustion`
+  - `active_sponsorship_handoff_can_block_on_low_reserve`
+
+### Rule 6: Deterministic Pool Iteration Ordering
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:98` (`std::sort(poolTLKeys.begin(), poolTLKeys.end())`).
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** Multiple affected pool-share trustlines.
+- **State Transition:** Candidate pools sorted canonically by `pool_id` (Stellar Core ledger key order) before redemption and counter delta accumulation.
+- **Failure Conditions:** Platform-dependent iteration order discrepancies.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation`
+
+### Rule 7: Operation Context Reconstruction & Revoke ID Derivation
+- **Protocol Source:** Stellar Core CAP-0038 Section "Claimable Balance ID", `HashIdPreimageRevokeId`.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** `tx_source_account`, `sequence`, `operation_index`, `pool_id`, constituent asset.
+- **State Transition:**
+  - When all context fields are present: derives exact 32-byte SHA-256 hash ID via `derive_pool_revoke_claimable_balance_id`.
+  - When any context field is missing: outputs `claimable_balance_id: None` with an explicit warning, maintaining exact counter and amount accounting without fabricating IDs.
+- **Failure Conditions:**
+  - Operation source is not asset issuer: fails closed as `Classification::Inconclusive`.
+  - Trustor equals operation source: fails closed as `Classification::Inconclusive`.
+  - Transaction source account missing from snapshot: fails closed as `Classification::Inconclusive`.
+  - Missing operation index when sponsorship handoffs exist: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_11_missing_transaction_sequence`
+  - `test_target_failure_mode_12_missing_operation_index`
+  - `test_target_failure_mode_17_conflicting_operation_context`
+  - `derives_cap0038_pool_revoke_id_from_xdr_preimage`
+
+### Rule 8: Sponsorship Sandwich Ordering & Validation
+- **Protocol Source:** Stellar Core `BeginSponsoringFutureReservesOpFrame.cpp`, `EndSponsoringFutureReservesOpFrame.cpp`, CAP-0033.
+- **Applicable Protocol Version:** $\ge 14$.
+- **Input Requirements:** `begin_operation_index`, `revoke_operation_index`, `end_operation_index`.
+- **State Transition:** Verifies strict ordering: `begin < revoke < end`. Confirms non-nested single handoff per target account.
+- **Failure Conditions:**
+  - Missing end operation index (unclosed sandwich): fails closed as `Classification::Inconclusive`.
+  - Begin index $\ge$ revoke index: fails closed as `Classification::Inconclusive`.
+  - End index $\le$ revoke index: fails closed as `Classification::Inconclusive`.
+  - Conflicting handoffs for the same target account: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_13_sponsorship_begin_end_ordering`
+
+### Rule 9: Protocol Version Gating
+- **Protocol Source:** Stellar Core `TransactionUtils.cpp:1624`.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** Header-derived `protocol_version: Option<u32>`.
+- **State Transition:** Protocol version $< 18$ fails before evaluating CAP-0038 pool redemptions.
+- **Failure Conditions:**
+  - Protocol version $< 18$: returns `Classification::Unsupported`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_14_unsupported_protocol_version`
+
+### Rule 10: Evidence Coherence and Discovery Completeness
+- **Protocol Source:** CAP-0038 `liquidityPoolUseCount`, RevokeTrace trust model.
+- **Applicable Protocol Version:** $\ge 18$.
+- **Input Requirements:** Snapshot ledger sequence, entries ledger sequence, entry last modified sequences, `liquidityPoolUseCount`.
+- **State Transition:** Requires exact ledger sequence alignment and complete discovery coverage reconciliation.
+- **Failure Conditions:**
+  - `entries_ledger_sequence != ledger_sequence`: fails closed as `Classification::Inconclusive`.
+  - Any ledger entry `last_modified_ledger_seq > ledger_sequence`: fails closed as `Classification::Inconclusive`.
+  - Target credit trustline `liquidityPoolUseCount != discovered_affected_pools.len()`: fails closed as `Classification::Inconclusive`.
+- **Tests Proving Implementation:**
+  - `test_target_failure_mode_15_mixed_ledger_evidence`
+  - `test_target_failure_mode_16_incomplete_discovery`
+
+---
+
+## 6. Safety Boundaries, Blockers, and Phase 4C Readiness
+
+### 6.1 Safety Invariants Maintained
+- `SupportedSafe` remains strictly unreachable. No code path produces a safe forecast without independent full-ledger capture verification.
+- `CompleteAuthoritativeLedger` remains strictly unreachable for caller-supplied snapshots.
+- Missing or contradictory evidence fails closed as `Classification::Inconclusive`.
+- Known reserve exhaustion fails closed as `Classification::SupportedBlocked`.
+- No signing, broadcasting, key storage, indexing, or external paid infrastructure.
+
+### 6.2 Remaining Blockers & Next Phase
+- Phase 4B implements exact reserve, sponsorship, and operation-context modeling, backed by 101 unit tests and verified against official Stellar Core source code.
+- Phase 4C (CLI and reporting interface) cannot begin until Phase 4B has been reviewed and merged into `main`.

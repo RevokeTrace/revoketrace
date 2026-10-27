@@ -49,7 +49,16 @@ Phase 4B implements exact reserve, sponsorship, and operation-context accounting
 - **Safety Boundary**: When required data is unavailable, results classify as `INCONCLUSIVE`.
   `SUPPORTED_SAFE` remains strictly unreachable.
 
-## Phase 1 status
+## Phase 4B status
+
+Phase 4B implements and tests exact reserve accounting, deterministic sponsorship transitions, constituent clawback flag propagation, and operation-context reconstruction, backed by comprehensive testing across 17 target failure modes.
+
+Safety boundaries remain strictly enforced:
+- `SUPPORTED_SAFE` is unreachable without an independent authoritative capture verifier.
+- Any missing or unproven operation context, mixed-ledger evidence, or sponsorship mismatch fails closed as `INCONCLUSIVE` or `SUPPORTED_BLOCKED`.
+- Phase 4C cannot begin until Phase 4B is merged into `main` following independent review.
+
+## Historical feasibility spike status
 
 The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.
 

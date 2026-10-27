@@ -2112,4 +2112,569 @@ mod tests {
             report.errors
         );
     }
+
+    #[test]
+    fn test_target_failure_mode_1_unsponsored_redemption() {
+        let snap = snapshot(None, true);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.transition, Transition::ForcedPoolRedemption);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        let redemption = &report.pool_redemptions[0];
+        assert_eq!(redemption.claimable_balances.len(), 2);
+        assert!(
+            redemption
+                .claimable_balances
+                .iter()
+                .all(|cb| cb.sponsor == "holder")
+        );
+
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -2);
+        assert_eq!(holder_delta.num_sponsoring, 2);
+        assert_eq!(holder_delta.num_sponsored, 0);
+    }
+
+    #[test]
+    fn test_target_failure_mode_2_sponsored_pool_share_trustline_removal() {
+        let snap = snapshot(Some("sponsor"), true);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        let redemption = &report.pool_redemptions[0];
+        assert_eq!(redemption.claimable_balances.len(), 2);
+        assert!(
+            redemption
+                .claimable_balances
+                .iter()
+                .all(|cb| cb.sponsor == "sponsor")
+        );
+
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -2);
+        assert_eq!(holder_delta.num_sponsored, -2);
+        assert_eq!(holder_delta.num_sponsoring, 0);
+
+        let sponsor_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "sponsor")
+            .unwrap();
+        assert_eq!(sponsor_delta.num_sponsoring, 0); // -2 from pool-share removal, +2 for 2 CBs
+    }
+
+    #[test]
+    fn test_target_failure_mode_3_sponsored_claimable_balance_creation_in_sandwich() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[3].balance_stroops = 100_000_000; // replacement has sufficient balance
+        snap.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op = revoke();
+        op.operation_index = Some(1);
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        let redemption = &report.pool_redemptions[0];
+        assert!(
+            redemption
+                .claimable_balances
+                .iter()
+                .all(|cb| cb.sponsor == "replacement")
+        );
+
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -2);
+        assert_eq!(holder_delta.num_sponsoring, 0);
+
+        let replacement_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "replacement")
+            .unwrap();
+        assert_eq!(replacement_delta.num_sponsoring, 2);
+    }
+
+    #[test]
+    fn test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].balance_stroops = 100_000_000;
+        snap.accounts[1].subentries = 4;
+        snap.pool_share_trustlines[0].pool_id = "pool-b".to_owned();
+        let mut pool_a = snap.pool_share_trustlines[0].clone();
+        pool_a.pool_id = "pool-a".to_owned();
+        snap.pool_share_trustlines.push(pool_a);
+        snap.discovery.pool_ids = vec!["pool-a".to_owned(), "pool-b".to_owned()];
+        snap.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &snap.network_passphrase,
+            snap.ledger_sequence,
+            &snap.discovery.pool_ids,
+        );
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 2);
+        assert_eq!(report.pool_redemptions[0].pool_id, "pool-a");
+        assert_eq!(report.pool_redemptions[1].pool_id, "pool-b");
+
+        let holder_delta = report
+            .account_deltas
+            .iter()
+            .find(|d| d.id == "holder")
+            .unwrap();
+        assert_eq!(holder_delta.subentries, -4);
+        assert_eq!(holder_delta.num_sponsoring, 4);
+    }
+
+    #[test]
+    fn test_target_failure_mode_5_sponsor_reserve_exhaustion() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[3].balance_stroops = 0; // replacement has 0 balance
+        snap.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op = revoke();
+        op.operation_index = Some(1);
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::SupportedBlocked);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("replacement") && e.contains("below reserve")),
+            "expected replacement below reserve error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_6_insufficient_minimum_balance_on_trustor() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].balance_stroops = 15_000_000;
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::SupportedBlocked);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("holder") && e.contains("below reserve")),
+            "expected holder below reserve error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_7_invalid_sponsorship_counters() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].num_sponsored = 5;
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("num_sponsored violates invariant")),
+            "expected invalid sponsorship counter error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_8_missing_sponsor_account() {
+        let snap = snapshot(Some("G_GHOST_SPONSOR_DOES_NOT_EXIST_IN_ACCOUNTS"), true);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e
+                .contains("pool sponsor G_GHOST_SPONSOR_DOES_NOT_EXIST_IN_ACCOUNTS is missing")),
+            "expected missing sponsor error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_9_buying_and_selling_liabilities() {
+        // Part A: selling liabilities exceed balance
+        let mut snap_a = snapshot(None, true);
+        snap_a.accounts[1].selling_liabilities_stroops = snap_a.accounts[1].balance_stroops + 1;
+        let op = revoke();
+        let report_a = evaluate(&op, &snap_a);
+        assert_eq!(report_a.classification, Classification::Inconclusive);
+        assert!(
+            report_a
+                .errors
+                .iter()
+                .any(|e| e.contains("selling liabilities exceed balance")),
+            "expected selling liabilities error, got: {:?}",
+            report_a.errors
+        );
+
+        // Part B: buying liabilities + balance exceeds INT64_MAX
+        let mut snap_b = snapshot(None, true);
+        snap_b.accounts[1].buying_liabilities_stroops =
+            (i64::MAX as u64) - snap_b.accounts[1].balance_stroops + 1;
+        let report_b = evaluate(&op, &snap_b);
+        assert_eq!(report_b.classification, Classification::Inconclusive);
+        assert!(
+            report_b
+                .errors
+                .iter()
+                .any(|e| e.contains("balance plus buying liabilities exceeds int64 limit")),
+            "expected buying liabilities error, got: {:?}",
+            report_b.errors
+        );
+
+        // Part C: selling liabilities increase required reserve, leading to SupportedBlocked
+        let mut snap_c = snapshot(None, true);
+        snap_c.accounts[1].selling_liabilities_stroops = 1_000_000;
+        let report_c = evaluate(&op, &snap_c);
+        assert_eq!(report_c.classification, Classification::SupportedBlocked);
+        assert!(
+            report_c.errors.iter().any(|e| e.contains("below reserve")),
+            "expected below reserve error due to selling liabilities, got: {:?}",
+            report_c.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_10_integer_overflow_and_underflow() {
+        let mut snap = snapshot(None, true);
+        snap.accounts[1].subentries = 0;
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("counter arithmetic underflow or overflow")),
+            "expected counter arithmetic underflow error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_11_missing_transaction_sequence() {
+        let snap = snapshot(None, true);
+        let mut op = revoke();
+        op.sequence = None;
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        let cb = &report.pool_redemptions[0].claimable_balances[0];
+        assert_eq!(cb.claimable_balance_id, None);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("claimable balance ID derivation skipped: operation context")),
+            "expected missing context warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_12_missing_operation_index() {
+        // Case A: Missing op index without handoffs -> succeeds with None ID and warning
+        let snap = snapshot(None, true);
+        let mut op_a = revoke();
+        op_a.operation_index = None;
+        let report_a = evaluate(&op_a, &snap);
+        assert_eq!(report_a.classification, Classification::UnverifiedForecast);
+        assert_eq!(
+            report_a.pool_redemptions[0].claimable_balances[0].claimable_balance_id,
+            None
+        );
+        assert!(
+            report_a
+                .warnings
+                .iter()
+                .any(|w| w.contains("claimable balance ID derivation skipped")),
+            "expected warning, got: {:?}",
+            report_a.warnings
+        );
+
+        // Case B: Missing op index WITH handoff present -> fails closed as Inconclusive
+        let mut snap_b = snapshot(None, true);
+        snap_b.accounts[3].balance_stroops = 100_000_000;
+        snap_b.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op_b = revoke();
+        op_b.operation_index = None;
+        let report_b = evaluate(&op_b, &snap_b);
+        assert_eq!(report_b.classification, Classification::Inconclusive);
+        assert!(
+            report_b.errors.iter().any(|e| e.contains(
+                "operation index is missing but required to evaluate sponsorship handoffs"
+            )),
+            "expected missing op index error for handoff, got: {:?}",
+            report_b.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_13_sponsorship_begin_end_ordering() {
+        // Case A: Unclosed sandwich (end_operation_index: None)
+        let mut snap_a = snapshot(None, true);
+        snap_a.accounts[3].balance_stroops = 100_000_000;
+        snap_a.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: None,
+        });
+        let mut op = revoke();
+        op.operation_index = Some(1);
+        let report_a = evaluate(&op, &snap_a);
+        assert_eq!(report_a.classification, Classification::Inconclusive);
+        assert!(
+            report_a
+                .errors
+                .iter()
+                .any(|e| e.contains("sponsorship handoff is unclosed")),
+            "expected unclosed sandwich error, got: {:?}",
+            report_a.errors
+        );
+
+        // Case B: begin index >= revoke index
+        let mut snap_b = snapshot(None, true);
+        snap_b.accounts[3].balance_stroops = 100_000_000;
+        snap_b.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 1,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let report_b = evaluate(&op, &snap_b);
+        assert_eq!(report_b.classification, Classification::Inconclusive);
+        assert!(
+            report_b
+                .errors
+                .iter()
+                .any(|e| e.contains("begin index must be less than revoke index")),
+            "expected inverted begin error, got: {:?}",
+            report_b.errors
+        );
+
+        // Case C: end index <= revoke index
+        let mut snap_c = snapshot(None, true);
+        snap_c.accounts[3].balance_stroops = 100_000_000;
+        snap_c.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(1),
+        });
+        let report_c = evaluate(&op, &snap_c);
+        assert_eq!(report_c.classification, Classification::Inconclusive);
+        assert!(
+            report_c
+                .errors
+                .iter()
+                .any(|e| e.contains("end index must be greater than revoke index")),
+            "expected inverted end error, got: {:?}",
+            report_c.errors
+        );
+
+        // Case D: Conflicting handoffs for same account
+        let mut snap_d = snapshot(None, true);
+        snap_d.accounts[3].balance_stroops = 100_000_000;
+        snap_d.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        snap_d.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let report_d = evaluate(&op, &snap_d);
+        assert_eq!(report_d.classification, Classification::Inconclusive);
+        assert!(
+            report_d
+                .errors
+                .iter()
+                .any(|e| e.contains("conflicting sponsorship handoffs")),
+            "expected conflicting handoffs error, got: {:?}",
+            report_d.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_14_unsupported_protocol_version() {
+        let mut snap = snapshot(None, true);
+        snap.protocol_version = Some(17);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Unsupported);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("unsupported protocol version: protocol version is below 18")),
+            "expected unsupported protocol version error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_15_mixed_ledger_evidence() {
+        // Case A: entries_ledger_sequence != ledger_sequence
+        let mut snap_a = snapshot(None, true);
+        snap_a.entries_ledger_sequence = 101;
+        let op = revoke();
+        let report_a = evaluate(&op, &snap_a);
+        assert_eq!(report_a.classification, Classification::Inconclusive);
+        assert!(
+            report_a
+                .errors
+                .iter()
+                .any(|e| e.contains("snapshot entries come from a different ledger sequence")),
+            "expected mismatched sequence error, got: {:?}",
+            report_a.errors
+        );
+
+        // Case B: account last_modified_ledger_seq is newer than snapshot ledger
+        let mut snap_b = snapshot(None, true);
+        snap_b.accounts[1].last_modified_ledger_seq = Some(101);
+        let report_b = evaluate(&op, &snap_b);
+        assert_eq!(report_b.classification, Classification::Inconclusive);
+        assert!(
+            report_b
+                .errors
+                .iter()
+                .any(|e| e.contains("newer than snapshot ledger")),
+            "expected newer entry sequence error, got: {:?}",
+            report_b.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_16_incomplete_discovery() {
+        let mut snap = snapshot(None, true);
+        snap.trustlines[0].liquidity_pool_use_count = Some(2);
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "liquidityPoolUseCount (2) does not match discovered affected pools (1)"
+            )),
+            "expected incomplete discovery error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_target_failure_mode_17_conflicting_operation_context() {
+        // Case A: operation source is not the asset issuer
+        let snap = snapshot(None, true);
+        let mut op_a = revoke();
+        op_a.source_account = "holder".to_owned();
+        let report_a = evaluate(&op_a, &snap);
+        assert_eq!(report_a.classification, Classification::Inconclusive);
+        assert!(
+            report_a
+                .errors
+                .iter()
+                .any(|e| e.contains("operation source is not the asset issuer")),
+            "expected source != issuer error, got: {:?}",
+            report_a.errors
+        );
+
+        // Case B: trustor == source account
+        let mut op_b = revoke();
+        op_b.trustor = "issuer".to_owned();
+        let report_b = evaluate(&op_b, &snap);
+        assert_eq!(report_b.classification, Classification::Inconclusive);
+        assert!(
+            report_b
+                .errors
+                .iter()
+                .any(|e| e.contains("operation trustor must differ from issuer source")),
+            "expected trustor == source error, got: {:?}",
+            report_b.errors
+        );
+
+        // Case C: tx_source_account references missing account
+        let mut op_c = revoke();
+        op_c.tx_source_account = Some("G_MISSING_ACCOUNT".to_owned());
+        let report_c = evaluate(&op_c, &snap);
+        assert_eq!(report_c.classification, Classification::Inconclusive);
+        assert!(
+            report_c
+                .errors
+                .iter()
+                .any(|e| e.contains("transaction source account G_MISSING_ACCOUNT is missing")),
+            "expected missing tx source account error, got: {:?}",
+            report_c.errors
+        );
+    }
+
+    #[test]
+    fn test_clawback_flag_propagation() {
+        let mut snap = snapshot(None, true);
+        snap.trustlines[0].flags =
+            AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        let mut op = revoke();
+        op.before_flags = AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        let cb_usd = report.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .find(|cb| cb.asset == "USD")
+            .unwrap();
+        assert!(
+            cb_usd.clawback_flag_enabled,
+            "USD claimable balance must have clawback flag enabled"
+        );
+        let cb_eur = report.pool_redemptions[0]
+            .claimable_balances
+            .iter()
+            .find(|cb| cb.asset == "EUR")
+            .unwrap();
+        assert!(
+            !cb_eur.clawback_flag_enabled,
+            "EUR claimable balance must not have clawback flag enabled"
+        );
+    }
 }
