@@ -24,8 +24,12 @@ pub enum Transition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Classification {
+    /// Reserved for a future trusted capture/verifier implementation.
     SupportedSafe,
     SupportedBlocked,
+    /// The supplied snapshot is internally coherent, but discovery is not
+    /// independently verified as ledger-complete.
+    UnverifiedForecast,
     Inconclusive,
     Unsupported,
 }
@@ -34,7 +38,7 @@ pub enum Classification {
 /// These are protocol result mappings, not a claim that a forecast will succeed.
 pub fn map_allow_trust_result(code: AllowTrustResultCode) -> Classification {
     match code {
-        AllowTrustResultCode::Success => Classification::SupportedSafe,
+        AllowTrustResultCode::Success => Classification::UnverifiedForecast,
         AllowTrustResultCode::LowReserve
         | AllowTrustResultCode::Malformed
         | AllowTrustResultCode::NoTrustLine
@@ -46,7 +50,7 @@ pub fn map_allow_trust_result(code: AllowTrustResultCode) -> Classification {
 
 pub fn map_set_trust_line_flags_result(code: SetTrustLineFlagsResultCode) -> Classification {
     match code {
-        SetTrustLineFlagsResultCode::Success => Classification::SupportedSafe,
+        SetTrustLineFlagsResultCode::Success => Classification::UnverifiedForecast,
         SetTrustLineFlagsResultCode::Malformed
         | SetTrustLineFlagsResultCode::NoTrustLine
         | SetTrustLineFlagsResultCode::CantRevoke
@@ -385,6 +389,22 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
                 pool.pool_id
             ));
         }
+        if pool.asset_a.is_empty()
+            || pool.asset_a_issuer.is_empty()
+            || pool.asset_b.is_empty()
+            || pool.asset_b_issuer.is_empty()
+        {
+            errors.push(format!(
+                "pool {} has incomplete asset identity",
+                pool.pool_id
+            ));
+        }
+        if pool.asset_a == pool.asset_b && pool.asset_a_issuer == pool.asset_b_issuer {
+            errors.push(format!(
+                "pool {} has contradictory identical constituent assets",
+                pool.pool_id
+            ));
+        }
         if pool.total_pool_shares > 0 && (pool.reserve_a == 0 || pool.reserve_b == 0) {
             errors.push(format!(
                 "pool {} has an arithmetic edge-case reserve state not accepted as ledger-reachable",
@@ -434,11 +454,14 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
 
     if transition != Transition::ForcedPoolRedemption {
         return Report {
-            classification: Classification::SupportedSafe,
+            classification: Classification::UnverifiedForecast,
             transition,
             pool_redemptions: Vec::new(),
             account_deltas: Vec::new(),
-            warnings: vec!["safe means safe for this immutable snapshot only".to_owned()],
+            warnings: vec![
+                "forecast is internally consistent but discovery is not independently verified"
+                    .to_owned(),
+            ],
             errors: Vec::new(),
         };
     }
@@ -553,11 +576,14 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
 
     if redemptions.is_empty() && errors.is_empty() {
         return Report {
-            classification: Classification::SupportedSafe,
+            classification: Classification::UnverifiedForecast,
             transition,
             pool_redemptions: redemptions,
             account_deltas: deltas.into_values().collect(),
-            warnings: vec!["no affected pool-share trustlines were found".to_owned()],
+            warnings: vec![
+                "no affected pool-share trustlines were found; discovery is not independently verified"
+                    .to_owned(),
+            ],
             errors,
         };
     }
@@ -622,7 +648,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     let classification = if errors.iter().any(|error| error.contains("unsupported")) {
         Classification::Inconclusive
     } else if errors.is_empty() {
-        Classification::SupportedSafe
+        Classification::UnverifiedForecast
     } else {
         Classification::SupportedBlocked
     };
@@ -631,7 +657,10 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         transition,
         pool_redemptions: redemptions,
         account_deltas: deltas.into_values().collect(),
-        warnings: vec!["safe means safe for this immutable snapshot only".to_owned()],
+        warnings: vec![
+            "forecast is internally consistent but discovery is not independently verified"
+                .to_owned(),
+        ],
         errors,
     }
 }
@@ -809,7 +838,7 @@ mod tests {
     #[test]
     fn evaluates_two_claimable_balance_redemption() {
         let report = evaluate(&revoke(), &snapshot(None, true));
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_eq!(report.pool_redemptions[0].withdrawn_a_stroops, 625);
         assert_eq!(report.pool_redemptions[0].withdrawn_b_stroops, 1_000);
         assert_eq!(report.pool_redemptions[0].claimable_balances.len(), 2);
@@ -820,14 +849,14 @@ mod tests {
         let mut one = snapshot(None, true);
         one.pool_share_trustlines[0].asset_b_issuer = "holder".to_owned();
         let report = evaluate(&revoke(), &one);
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_eq!(report.pool_redemptions[0].claimable_balances.len(), 1);
 
         let mut zero = one;
         zero.pool_share_trustlines[0].owner_pool_shares = 1;
         zero.pool_share_trustlines[0].reserve_a = 1;
         let report = evaluate(&revoke(), &zero);
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert!(report.pool_redemptions[0].claimable_balances.is_empty());
     }
 
@@ -835,7 +864,7 @@ mod tests {
     fn sponsored_pool_share_uses_sponsor_and_sponsorship_handoff_uses_replacement() {
         let sponsored = snapshot(Some("sponsor"), true);
         let report = evaluate(&revoke(), &sponsored);
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert!(
             report.pool_redemptions[0]
                 .claimable_balances
@@ -855,7 +884,7 @@ mod tests {
         let mut op = revoke();
         op.operation_index = 1;
         let report = evaluate(&op, &sandwich);
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert!(
             report.pool_redemptions[0]
                 .claimable_balances
@@ -909,7 +938,7 @@ mod tests {
             &state.discovery.pool_ids,
         );
         let report = evaluate(&revoke(), &state);
-        assert_eq!(report.classification, Classification::SupportedSafe);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_eq!(report.pool_redemptions.len(), 1);
         assert_eq!(report.pool_redemptions[0].pool_id, "pool-1");
     }
@@ -936,6 +965,55 @@ mod tests {
     }
 
     #[test]
+    fn mismatched_ledger_sequences_are_inconclusive() {
+        let mut state = snapshot(None, true);
+        state.entries_ledger_sequence = 99;
+        let report = evaluate(&revoke(), &state);
+        assert_eq!(report.classification, Classification::Inconclusive);
+    }
+
+    #[test]
+    fn internally_consistent_but_incomplete_snapshot_is_unverified_only() {
+        let mut state = snapshot(None, true);
+        state.pool_share_trustlines.clear();
+        state.discovery.pool_ids.clear();
+        state.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &state.network_passphrase,
+            state.ledger_sequence,
+            &state.discovery.pool_ids,
+        );
+        let report = evaluate(&revoke(), &state);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("not independently verified"))
+        );
+        assert_ne!(report.classification, Classification::SupportedSafe);
+    }
+
+    #[test]
+    fn ledger_capture_metadata_alone_cannot_establish_completeness() {
+        let mut state = snapshot(None, true);
+        state.discovery.source = DiscoverySource::LedgerCapture {
+            endpoint: "https://rpc.example.invalid".to_owned(),
+        };
+        let report = evaluate(&revoke(), &state);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_ne!(report.classification, Classification::SupportedSafe);
+    }
+
+    #[test]
+    fn contradictory_pool_identity_is_inconclusive() {
+        let mut state = snapshot(None, true);
+        state.pool_share_trustlines[0].asset_b = "USD".to_owned();
+        state.pool_share_trustlines[0].asset_b_issuer = "issuer".to_owned();
+        let report = evaluate(&revoke(), &state);
+        assert_eq!(report.classification, Classification::Inconclusive);
+    }
+
+    #[test]
     fn active_sponsorship_handoff_can_block_on_low_reserve() {
         let mut state = snapshot(Some("sponsor"), true);
         state.sponsorship_handoffs.push(SponsorshipHandoff {
@@ -949,6 +1027,7 @@ mod tests {
         op.operation_index = 1;
         let report = evaluate(&op, &state);
         assert_eq!(report.classification, Classification::SupportedBlocked);
+        assert_ne!(report.classification, Classification::UnverifiedForecast);
         assert!(
             report
                 .errors
@@ -1005,7 +1084,7 @@ mod tests {
     fn authoritative_result_codes_map_conservatively() {
         assert_eq!(
             map_allow_trust_result(AllowTrustResultCode::Success),
-            Classification::SupportedSafe
+            Classification::UnverifiedForecast
         );
         assert_eq!(
             map_allow_trust_result(AllowTrustResultCode::LowReserve),
