@@ -341,6 +341,7 @@ impl HttpTransport for CurlTransport {
 pub struct MockTransport {
     pub get_responses: std::collections::BTreeMap<String, Result<String, String>>,
     pub post_responses: std::collections::BTreeMap<String, Result<String, String>>,
+    pub post_method_responses: std::collections::BTreeMap<String, Result<String, String>>,
 }
 
 impl MockTransport {
@@ -355,10 +356,19 @@ impl MockTransport {
     pub fn set_post(&mut self, url: impl Into<String>, resp: Result<String, String>) {
         self.post_responses.insert(url.into(), resp);
     }
+
+    pub fn set_post_method(&mut self, method: impl Into<String>, resp: Result<String, String>) {
+        self.post_method_responses.insert(method.into(), resp);
+    }
 }
 
 impl HttpTransport for MockTransport {
-    fn post(&self, url: &str, _body: &str) -> Result<String, DiscoveryError> {
+    fn post(&self, url: &str, body: &str) -> Result<String, DiscoveryError> {
+        for (method, resp) in &self.post_method_responses {
+            if body.contains(method) {
+                return resp.clone().map_err(DiscoveryError::TransportError);
+            }
+        }
         if let Some(resp) = self.post_responses.get(url) {
             resp.clone().map_err(DiscoveryError::TransportError)
         } else {

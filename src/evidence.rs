@@ -972,3 +972,1457 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Adversarial Negative & Positive Test Suite (Phase 4A)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::discovery::{MockTransport, decode_account_id};
+    use crate::{
+        AUTHORIZED_FLAG, AccountState, Classification, CreditAsset, CreditTrustlineState,
+        DiscoveryCoverage, DiscoveryProof, DiscoverySource, OperationSpec, PoolShareState,
+        Snapshot, derive_constant_product_pool_id, discovery_manifest_sha256, evaluate,
+    };
+    use stellar_xdr::{
+        AccountEntry, AccountEntryExt, AccountEntryExtensionV1, AccountEntryExtensionV1Ext,
+        AccountEntryExtensionV2, AccountEntryExtensionV2Ext, AlphaNum4, Asset, AssetCode4, Hash,
+        LedgerEntryData, LedgerEntryExt, LedgerEntryExtensionV1, LedgerEntryExtensionV1Ext,
+        LedgerHeader, LedgerHeaderExt, Liabilities, Limits, LiquidityPoolConstantProductParameters,
+        LiquidityPoolEntry, LiquidityPoolEntryBody, LiquidityPoolEntryConstantProduct, PoolId,
+        PublicKey, SequenceNumber, SponsorshipDescriptor, StellarValue, StellarValueExt, String32,
+        StringM, Thresholds, TimePoint, TrustLineAsset, TrustLineEntry, TrustLineEntryExt,
+        TrustLineEntryExtensionV2, TrustLineEntryExtensionV2Ext, TrustLineEntryV1,
+        TrustLineEntryV1Ext, Uint256, UpgradeType, VecM, WriteXdr,
+    };
+
+    const NETWORK_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+    const TRUSTOR_STRKEY: &str = "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB";
+    const ISSUER_STRKEY: &str = "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG";
+    const OTHER_ISSUER_STRKEY: &str = "GA5Q3FBUPYK4T3BQDILVTDFN2TCLLNBDYABMFZRXTE2BLXP5CZXOQFWM";
+
+    const REAL_HEADER_XDR: &str = "AAAAHVOZ89LSqu4moPER2wy1YzgGMuM/b3wyPKcdRQN/Aswnqa/ZJd33JpbuLrfIRUs+c+8c6VqiE3HZoJy1ltNTHfAAAAAAauCEewAAAAAAAAABAAAAAKgkzRi8nXUGTSmaW1uspDvDqi8yaTgVPYwvm7XLbfAzAAAAQA4z+hQOXMsqYo3iWXk5CS/6zEATkWcD1+/Ts+70aWJu48Yr0dyHQN/QTICN46IkBhSKVNp1jDnf5rRE06B6iQJU9qbQM8wMDwGVL+hhkoS1B2hNpTkGZFDTu876ZNf5uqkE6BJi0nthXbi6zQBu9ixyEJYGsfcxclb2z7kO8s7MAFKgjg3gtrOnZAAAAAAsg3ISKdwAAAAAAAAAAAAOPbEAAABkAExLQAAAAMit8ugw6geBSII5ilGJF1fNsTkMBwVWPjKX71e5e032oEfHJn9bZYdTKdNTJUAzzqPlp8Bx6O189JCSlKDqfX9yq/E23IeCb2hra2R9ZaEUej6hcg2AwbODCzvqDoaX82m2cm6r8ecN/675yBcoOos0c4aKRh6aDbiou7DptxnL1QAAAAA=";
+
+    fn trustor_id() -> AccountId {
+        let bytes = decode_account_id(TRUSTOR_STRKEY).unwrap();
+        AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(bytes)))
+    }
+
+    fn issuer_id() -> AccountId {
+        let bytes = decode_account_id(ISSUER_STRKEY).unwrap();
+        AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(bytes)))
+    }
+
+    fn other_issuer_id() -> AccountId {
+        let bytes = decode_account_id(OTHER_ISSUER_STRKEY).unwrap();
+        AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(bytes)))
+    }
+
+    fn sponsor_acc_id() -> (AccountId, String) {
+        let bytes = [7u8; 32];
+        let strkey = encode_account_id(&bytes);
+        (
+            AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(bytes))),
+            strkey,
+        )
+    }
+
+    fn credit_asset_flutter() -> CreditAsset {
+        CreditAsset {
+            code: "FLUTTER".to_owned(),
+            issuer: ISSUER_STRKEY.to_owned(),
+        }
+    }
+
+    fn make_header_xdr(version: u32, seq: u32, base_reserve: u32) -> String {
+        let header = LedgerHeader {
+            ledger_version: version,
+            previous_ledger_hash: Hash([0u8; 32]),
+            scp_value: StellarValue {
+                tx_set_hash: Hash([0u8; 32]),
+                close_time: TimePoint(1793098875),
+                upgrades: VecM::<UpgradeType, 6>::default(),
+                ext: StellarValueExt::Basic,
+            },
+            tx_set_result_hash: Hash([0u8; 32]),
+            bucket_list_hash: Hash([0u8; 32]),
+            ledger_seq: seq,
+            total_coins: 100_000_000_000_000_000,
+            fee_pool: 0,
+            inflation_seq: 0,
+            id_pool: 1000,
+            base_fee: 100,
+            base_reserve,
+            max_tx_set_size: 100,
+            skip_list: [
+                Hash([0u8; 32]),
+                Hash([0u8; 32]),
+                Hash([0u8; 32]),
+                Hash([0u8; 32]),
+            ],
+            ext: LedgerHeaderExt::V0,
+        };
+        header.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_account_xdr(acc_id: AccountId, balance: i64) -> String {
+        let entry = LedgerEntryData::Account(AccountEntry {
+            account_id: acc_id,
+            balance,
+            seq_num: SequenceNumber(1),
+            num_sub_entries: 10,
+            inflation_dest: None,
+            flags: 0,
+            home_domain: String32(StringM::default()),
+            thresholds: Thresholds([1, 1, 1, 1]),
+            signers: VecM::default(),
+            ext: AccountEntryExt::V1(AccountEntryExtensionV1 {
+                liabilities: Liabilities {
+                    buying: 0,
+                    selling: 0,
+                },
+                ext: AccountEntryExtensionV1Ext::V2(AccountEntryExtensionV2 {
+                    num_sponsoring: 2,
+                    num_sponsored: 0,
+                    signer_sponsoring_i_ds: VecM::default(),
+                    ext: AccountEntryExtensionV2Ext::V0,
+                }),
+            }),
+        });
+        entry.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_credit_tl_xdr(
+        owner: AccountId,
+        issuer: AccountId,
+        code: &str,
+        use_count: Option<i32>,
+    ) -> String {
+        let mut arr = [0u8; 4];
+        arr[..code.len()].copy_from_slice(code.as_bytes());
+        let asset = TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+            asset_code: AssetCode4(arr),
+            issuer,
+        });
+
+        let ext = match use_count {
+            Some(cnt) => TrustLineEntryExt::V1(TrustLineEntryV1 {
+                liabilities: Liabilities {
+                    buying: 0,
+                    selling: 0,
+                },
+                ext: TrustLineEntryV1Ext::V2(TrustLineEntryExtensionV2 {
+                    liquidity_pool_use_count: cnt,
+                    ext: TrustLineEntryExtensionV2Ext::V0,
+                }),
+            }),
+            None => TrustLineEntryExt::V0,
+        };
+
+        let entry = LedgerEntryData::Trustline(TrustLineEntry {
+            account_id: owner,
+            asset,
+            balance: 500_000_000,
+            limit: i64::MAX,
+            flags: 1, // AUTHORIZED
+            ext,
+        });
+        entry.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_pool_tl_xdr(owner: AccountId, pool_id: &Hash, shares: i64) -> String {
+        let entry = LedgerEntryData::Trustline(TrustLineEntry {
+            account_id: owner,
+            asset: TrustLineAsset::PoolShare(PoolId(pool_id.clone())),
+            balance: shares,
+            limit: i64::MAX,
+            flags: 1,
+            ext: TrustLineEntryExt::V0,
+        });
+        entry.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_pool_entry_xdr(asset_a: Asset, asset_b: Asset, fee_bps: i32) -> (String, Hash, String) {
+        let pool_id = derive_constant_product_pool_id(&asset_a, &asset_b, fee_bps).unwrap();
+        let pool_hex = hex::encode(pool_id.0);
+        let entry = LedgerEntryData::LiquidityPool(LiquidityPoolEntry {
+            liquidity_pool_id: PoolId(pool_id.clone()),
+            body: LiquidityPoolEntryBody::LiquidityPoolConstantProduct(
+                LiquidityPoolEntryConstantProduct {
+                    params: LiquidityPoolConstantProductParameters {
+                        asset_a,
+                        asset_b,
+                        fee: fee_bps,
+                    },
+                    reserve_a: 10_000_000,
+                    reserve_b: 20_000_000,
+                    total_pool_shares: 1000,
+                    pool_shares_trust_line_count: 1,
+                },
+            ),
+        });
+        (
+            entry.to_xdr_base64(Limits::none()).unwrap(),
+            pool_id,
+            pool_hex,
+        )
+    }
+
+    fn make_sponsorship_ext_xdr(sponsor: Option<AccountId>) -> String {
+        let ext = match sponsor {
+            Some(acc) => LedgerEntryExt::V1(LedgerEntryExtensionV1 {
+                sponsoring_id: SponsorshipDescriptor(Some(acc)),
+                ext: LedgerEntryExtensionV1Ext::V0,
+            }),
+            None => LedgerEntryExt::V0,
+        };
+        ext.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Positive Verification Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_decode_real_testnet_header_xdr() {
+        let header = decode_ledger_header(REAL_HEADER_XDR).expect("valid testnet header XDR");
+        assert_eq!(header.ledger_version, 29);
+        assert_eq!(header.ledger_seq, 5415054);
+        assert_eq!(header.base_reserve, 5_000_000);
+        assert_eq!(header.base_fee, 100);
+    }
+
+    #[test]
+    fn test_decode_sponsorship_v0_and_v1() {
+        let v0_b64 = Some("AAAAAA==".to_owned());
+        let sponsor_none = decode_entry_sponsorship(&v0_b64).expect("valid V0 decode");
+        assert_eq!(sponsor_none, None);
+
+        let empty_opt: Option<String> = None;
+        assert_eq!(decode_entry_sponsorship(&empty_opt).unwrap(), None);
+
+        let (sponsor_acc, sponsor_strkey) = sponsor_acc_id();
+        let v1_b64 = Some(make_sponsorship_ext_xdr(Some(sponsor_acc)));
+        let sponsor_decoded = decode_entry_sponsorship(&v1_b64).expect("valid V1 decode");
+        assert_eq!(sponsor_decoded, Some(sponsor_strkey));
+    }
+
+    #[test]
+    fn test_positive_bounded_current_tip_rpc_classification() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+
+        let mut mock = MockTransport::new();
+        // 1. getLatestLedger response
+        let latest_ledger_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "id": "abc123hash",
+                "protocolVersion": 29,
+                "sequence": 5000,
+                "headerXdr": make_header_xdr(29, 5000, 5_000_000)
+            }
+        })
+        .to_string();
+        mock.set_post_method("getLatestLedger", Ok(latest_ledger_json));
+
+        // 2. Horizon candidate enumeration
+        let horizon_json = serde_json::json!({
+            "id": TRUSTOR_STRKEY,
+            "balances": [{
+                "asset_type": "liquidity_pool_shares",
+                "liquidity_pool_id": pool_hex
+            }]
+        })
+        .to_string();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(horizon_json),
+        );
+
+        // 3. getLedgerEntries response with extXdr
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let entries = vec![
+            serde_json::json!({
+                "key": k_trustor,
+                "xdr": make_account_xdr(trustor_id(), 100_000_000),
+                "lastModifiedLedgerSeq": 4900,
+                "extXdr": "AAAAAA=="
+            }),
+            serde_json::json!({
+                "key": k_issuer,
+                "xdr": make_account_xdr(issuer_id(), 500_000_000),
+                "lastModifiedLedgerSeq": 4800,
+                "extXdr": "AAAAAA=="
+            }),
+            serde_json::json!({
+                "key": k_credit_tl,
+                "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)),
+                "lastModifiedLedgerSeq": 4950,
+                "extXdr": "AAAAAA=="
+            }),
+            serde_json::json!({
+                "key": k_ptl,
+                "xdr": make_pool_tl_xdr(trustor_id(), &derive_constant_product_pool_id(
+                    &Asset::Native,
+                    &Asset::CreditAlphanum4(AlphaNum4 {
+                        asset_code: AssetCode4(*b"FLUT"),
+                        issuer: issuer_id(),
+                    }),
+                    30,
+                ).unwrap(), 100),
+                "lastModifiedLedgerSeq": 4950,
+                "extXdr": "AAAAAA=="
+            }),
+            serde_json::json!({
+                "key": k_pool,
+                "xdr": pool_xdr,
+                "lastModifiedLedgerSeq": 4900,
+                "extXdr": "AAAAAA=="
+            }),
+        ];
+
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "entries": entries,
+                "latestLedger": 5000
+            }
+        })
+        .to_string();
+        mock.set_post_method("getLedgerEntries", Ok(rpc_json));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+
+        let asset = CreditAsset {
+            code: "FLUT".to_owned(),
+            issuer: ISSUER_STRKEY.to_owned(),
+        };
+
+        let snapshot = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+            .expect("successful acquisition");
+
+        assert_eq!(snapshot.ledger_sequence, 5000);
+        assert_eq!(snapshot.base_reserve_stroops, Some(5_000_000));
+        assert_eq!(snapshot.protocol_version, Some(29));
+        assert!(snapshot.sponsorship_evidence_complete);
+        assert_eq!(
+            snapshot.discovery.evidence_classification,
+            Some(EvidenceClassification::BoundedCurrentTipRpc)
+        );
+
+        // Preflight forecast remains UnverifiedForecast; SupportedSafe unreachable!
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: ISSUER_STRKEY.to_owned(),
+            trustor: TRUSTOR_STRKEY.to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset,
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_ne!(report.classification, Classification::SupportedSafe);
+    }
+
+    #[test]
+    fn test_positive_authoritative_complete_export_classification() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "core-export-ledger-5000".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1,
+                    verified_pool_count: 1,
+                },
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ],
+            trustlines: vec![CreditTrustlineState {
+                owner: TRUSTOR_STRKEY.to_owned(),
+                asset: CreditAsset {
+                    code: "FLUTTER".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+                flags: AUTHORIZED_FLAG,
+                sponsor: None,
+                liquidity_pool_use_count: Some(1),
+                last_modified_ledger_seq: Some(4950),
+            }],
+            pool_share_trustlines: vec![PoolShareState {
+                pool_id,
+                owner: TRUSTOR_STRKEY.to_owned(),
+                asset_a: "FLUTTER".to_owned(),
+                asset_a_issuer: ISSUER_STRKEY.to_owned(),
+                asset_b: "XLM".to_owned(),
+                asset_b_issuer: "native".to_owned(),
+                reserve_a: 10_000_000,
+                reserve_b: 20_000_000,
+                total_pool_shares: 1000,
+                owner_pool_shares: 100,
+                sponsor: None,
+                last_modified_ledger_seq: Some(4900),
+            }],
+            sponsorship_handoffs: Vec::new(),
+        };
+
+        let classification =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+                .expect("validation passed");
+        assert_eq!(
+            classification,
+            EvidenceClassification::CompleteAuthoritativeLedger
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Adversarial Negative Tests (17 Failure Modes)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_adversarial_1_missing_pool_share_trustline() {
+        let mut mock = MockTransport::new();
+        mock.set_post_method(
+            "getLatestLedger",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            }).to_string()),
+        );
+        let pool_hex = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46";
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+            }).to_string()),
+        );
+        // Omit pool-share trustline in RPC response
+        mock.set_post_method(
+            "getLedgerEntries",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "entries": [], "latestLedger": 5000 }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_2_missing_liquidity_pool_entry() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        }).to_string()));
+
+        // Return ptl but omit pool entry
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash)),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        mock.set_post_method(
+            "getLedgerEntries",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "entries": [{
+                        "key": k_ptl,
+                        "xdr": make_pool_tl_xdr(trustor_id(), &Hash([0u8; 32]), 100),
+                        "lastModifiedLedgerSeq": 4900,
+                        "extXdr": "AAAAAA=="
+                    }],
+                    "latestLedger": 5000
+                }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+        let _ = pool_xdr;
+    }
+
+    #[test]
+    fn test_adversarial_3_duplicate_ledger_entry() {
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let rpc_result = crate::discovery::RpcResult {
+            entries: vec![
+                crate::discovery::RpcEntry {
+                    key: k_trustor.clone(),
+                    xdr: make_account_xdr(trustor_id(), 1000),
+                    last_modified_ledger_seq: 4000,
+                    ext_xdr: None,
+                },
+                crate::discovery::RpcEntry {
+                    key: k_trustor.clone(),
+                    xdr: make_account_xdr(trustor_id(), 2000),
+                    last_modified_ledger_seq: 4000,
+                    ext_xdr: None,
+                },
+            ],
+            latest_ledger: 5000,
+        };
+        let err = crate::discovery::validate_rpc_entries(&rpc_result, &[k_trustor]).unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_4_incorrect_trustor() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        }).to_string()));
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        // Credit trustline belongs to other_issuer_id instead of trustor!
+        let forged_credit_tl = make_credit_tl_xdr(other_issuer_id(), issuer_id(), "FLUT", Some(1));
+
+        mock.set_post_method("getLedgerEntries", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                    { "key": k_credit_tl, "xdr": forged_credit_tl, "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &Hash([0u8; 32]), 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                ],
+                "latestLedger": 5000
+            }
+        }).to_string()));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::WrongTrustor { .. }));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_5_incorrect_asset_issuer() {
+        // Pool pairs "FLUT" with other_issuer_id instead of target issuer!
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: other_issuer_id(),
+            }),
+            30,
+        );
+
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        }).to_string()));
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash.clone()),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        mock.set_post_method("getLedgerEntries", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                    { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool_hash, 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                ],
+                "latestLedger": 5000
+            }
+        }).to_string()));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .unwrap_err();
+        // Since pool pairs other_issuer_id, discovered count is 0 != expected 1
+        assert!(matches!(
+            err,
+            DiscoveryError::CounterMismatch {
+                expected_count: 1,
+                discovered_count: 0
+            }
+        ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_6_incorrect_pool_id() {
+        // Construct pool with fee 30, but request pool ID derived from fee 50
+        let (pool_xdr, _, _) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+        let forged_pool_id = derive_constant_product_pool_id(
+            &Asset::Native,
+            &Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            50,
+        )
+        .unwrap();
+        let forged_hex = hex::encode(forged_pool_id.0);
+
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": forged_hex }]
+        }).to_string()));
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(forged_pool_id.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(forged_pool_id),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        mock.set_post_method("getLedgerEntries", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                    { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &Hash([0u8; 32]), 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                ],
+                "latestLedger": 5000
+            }
+        }).to_string()));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::ParseError(_) | DiscoveryError::InvalidPoolDerivation { .. }
+        ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_7_mixed_ledger_evidence() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        }).to_string()));
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash.clone()),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        // One entry has lastModifiedLedgerSeq = 5001 > latestLedger = 5000!
+        mock.set_post_method("getLedgerEntries", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                    { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 5001, "extXdr": "AAAAAA==" },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool_hash, 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                ],
+                "latestLedger": 5000
+            }
+        }).to_string()));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::InconsistentLedgerSequence {
+                entry_seq: 5001,
+                snapshot_seq: 5000
+            }
+        ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_8_missing_ledger_close_changes_delta_treated_as_snapshot() {
+        // Delta missing base account entries
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "raw-delta-changes".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: vec![],
+                manifest_sha256: discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &[]),
+                coverage: DiscoveryCoverage::Unproven,
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: false,
+            accounts: vec![], // Missing base accounts!
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: ISSUER_STRKEY.to_owned(),
+            trustor: TRUSTOR_STRKEY.to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: credit_asset_flutter(),
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("source account is missing"))
+        );
+    }
+
+    #[test]
+    fn test_adversarial_9_missing_deletion_records() {
+        // Reconciliation fails because candidate set contains 2 pools but on-chain use count is 1
+        let pool_id_1 =
+            "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_id_2 =
+            "078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c".to_owned();
+        let pool_ids = vec![pool_id_1.clone(), pool_id_2.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "export".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1, // On-chain says 1!
+                    verified_pool_count: 2,      // But 2 are present because deletion was missed!
+                },
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ],
+            trustlines: vec![CreditTrustlineState {
+                owner: TRUSTOR_STRKEY.to_owned(),
+                asset: CreditAsset {
+                    code: "FLUTTER".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+                flags: AUTHORIZED_FLAG,
+                sponsor: None,
+                liquidity_pool_use_count: Some(1),
+                last_modified_ledger_seq: Some(4950),
+            }],
+            pool_share_trustlines: vec![
+                PoolShareState {
+                    pool_id: pool_id_1,
+                    owner: TRUSTOR_STRKEY.to_owned(),
+                    asset_a: "FLUTTER".to_owned(),
+                    asset_a_issuer: ISSUER_STRKEY.to_owned(),
+                    asset_b: "XLM".to_owned(),
+                    asset_b_issuer: "native".to_owned(),
+                    reserve_a: 100,
+                    reserve_b: 200,
+                    total_pool_shares: 100,
+                    owner_pool_shares: 10,
+                    sponsor: None,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                PoolShareState {
+                    pool_id: pool_id_2,
+                    owner: TRUSTOR_STRKEY.to_owned(),
+                    asset_a: "FLUTTER".to_owned(),
+                    asset_a_issuer: ISSUER_STRKEY.to_owned(),
+                    asset_b: "XLM".to_owned(),
+                    asset_b_issuer: "native".to_owned(),
+                    reserve_a: 100,
+                    reserve_b: 200,
+                    total_pool_shares: 100,
+                    owner_pool_shares: 10,
+                    sponsor: None,
+                    last_modified_ledger_seq: Some(4900),
+                },
+            ],
+            sponsorship_handoffs: vec![],
+        };
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: ISSUER_STRKEY.to_owned(),
+            trustor: TRUSTOR_STRKEY.to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: credit_asset_flutter(),
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("does not match discovered affected pools"))
+        );
+    }
+
+    #[test]
+    fn test_adversarial_10_truncated_archive_or_capture() {
+        let truncated_json =
+            "{ \"network_passphrase\": \"Test SDF Network\", \"ledger_sequence\": 50";
+        let res: Result<AuthoritativeCaptureArtifact, _> = serde_json::from_str(truncated_json);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_adversarial_11_incorrect_network() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        // Manifest computed with Test SDF Network, but snapshot has Public Global
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        let snapshot = Snapshot {
+            network_passphrase: "Public Global Stellar Network ; September 2015".to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "export".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids,
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::Unproven,
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        let err =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+                .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_12_unsupported_protocol_version() {
+        let mut mock = MockTransport::new();
+        // Return protocolVersion = 17 (pre-CAP-0038)
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 17, "sequence": 5000, "headerXdr": make_header_xdr(17, 5000, 5_000_000) }
+        }).to_string()));
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::UnsupportedProtocolVersion {
+                version: 17,
+                minimum: 18
+            }
+        ));
+        assert_eq!(err.into_classification(), Classification::Unsupported);
+    }
+
+    #[test]
+    fn test_adversarial_13_forged_provenance_rejected() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        // Caller attempts to label TwoTierDiscovery as CompleteAuthoritativeLedger!
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::TwoTierDiscovery {
+                    horizon_endpoint: "https://horizon.example".to_owned(),
+                    rpc_endpoint: "https://rpc.example".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1,
+                    verified_pool_count: 1,
+                },
+                evidence_classification: Some(EvidenceClassification::CompleteAuthoritativeLedger),
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        let err =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, false)
+                .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_14_incorrect_sponsorship_identity() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+        let (_, sponsor_strkey) = sponsor_acc_id();
+
+        // Pool has sponsor sponsor_strkey, but sponsor_strkey is missing from snapshot accounts!
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "export".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1,
+                    verified_pool_count: 1,
+                },
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ], // sponsor_strkey missing!
+            trustlines: vec![],
+            pool_share_trustlines: vec![PoolShareState {
+                pool_id,
+                owner: TRUSTOR_STRKEY.to_owned(),
+                asset_a: "FLUTTER".to_owned(),
+                asset_a_issuer: ISSUER_STRKEY.to_owned(),
+                asset_b: "XLM".to_owned(),
+                asset_b_issuer: "native".to_owned(),
+                reserve_a: 100,
+                reserve_b: 200,
+                total_pool_shares: 100,
+                owner_pool_shares: 10,
+                sponsor: Some(sponsor_strkey),
+                last_modified_ledger_seq: Some(4900),
+            }],
+            sponsorship_handoffs: vec![],
+        };
+
+        let classification =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+                .unwrap();
+        // Degrades to LedgerConsistentIncomplete because sponsor account is unverified!
+        assert_eq!(
+            classification,
+            EvidenceClassification::LedgerConsistentIncomplete
+        );
+    }
+
+    #[test]
+    fn test_adversarial_15_missing_reserve_configuration() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        // base_reserve_stroops is None
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "export".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids,
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::Unproven,
+                evidence_classification: None,
+            },
+            base_reserve_stroops: None,
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        let classification =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+                .unwrap();
+        assert_eq!(
+            classification,
+            EvidenceClassification::LedgerConsistentIncomplete
+        );
+    }
+
+    #[test]
+    fn test_adversarial_16_interrupted_capture() {
+        let mut mock = MockTransport::new();
+        // Network timeout / transport error on getLatestLedger
+        mock.set_post_method(
+            "getLatestLedger",
+            Err("connection timeout after 15s".to_owned()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::TransportError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_17_stale_indexer_data() {
+        let pool_hex = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46";
+        let mut mock = MockTransport::new();
+        mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+        }).to_string()));
+        // Horizon returns closed pool
+        mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
+            "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        }).to_string()));
+
+        // RPC returns empty (key was deleted on-chain)
+        mock.set_post_method(
+            "getLedgerEntries",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "entries": [], "latestLedger": 5000 }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::StaleIndexerData(_) | DiscoveryError::ParseError(_)
+        ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+}
