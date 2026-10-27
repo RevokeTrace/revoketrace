@@ -1,0 +1,79 @@
+{
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "ledger_sequence": 5413920,
+  "entries_ledger_sequence": 5413920,
+  "discovery": {
+    "source": {
+      "LedgerCapture": {
+        "endpoint": "https://soroban-testnet.stellar.org"
+      }
+    },
+    "target_ledger_sequence": 5413920,
+    "pool_ids": [
+      "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46",
+      "078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c"
+    ],
+    "manifest_sha256": "fe73e23f1769045ae984f21ad44b0af2c4e44951cb56aed2ca890d22407b5380"
+  },
+  "base_reserve_stroops": 5000000,
+  "accounts": [
+    {
+      "id": "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB",
+      "balance_stroops": 203019997200,
+      "selling_liabilities_stroops": 0,
+      "subentries": 6,
+      "num_sponsoring": 0,
+      "num_sponsored": 0
+    },
+    {
+      "id": "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG",
+      "balance_stroops": 100000000000,
+      "selling_liabilities_stroops": 0,
+      "subentries": 0,
+      "num_sponsoring": 0,
+      "num_sponsored": 0
+    }
+  ],
+  "trustlines": [
+    {
+      "owner": "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB",
+      "asset": {
+        "code": "FLUTTER",
+        "issuer": "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG"
+      },
+      "flags": 1,
+      "sponsor": null,
+      "liquidity_pool_use_count": 2,
+      "last_modified_ledger_seq": 5413920
+    }
+  ],
+  "pool_share_trustlines": [
+    {
+      "pool_id": "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46",
+      "owner": "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB",
+      "asset_a": "SDK",
+      "asset_a_issuer": "GA5Q3FBUPYK4T3BQDILVTDFN2TCLLNBDYABMFZRXTE2BLXP5CZXOQFWM",
+      "asset_b": "FLUTTER",
+      "asset_b_issuer": "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG",
+      "reserve_a": 700000000,
+      "reserve_b": 514506217,
+      "total_pool_shares": 600000000,
+      "owner_pool_shares": 600000000,
+      "sponsor": null
+    },
+    {
+      "pool_id": "078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c",
+      "owner": "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB",
+      "asset_a": "XLM",
+      "asset_a_issuer": "native",
+      "asset_b": "FLUTTER",
+      "asset_b_issuer": "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG",
+      "reserve_a": 4980000000,
+      "reserve_b": 4980000000,
+      "total_pool_shares": 4980000000,
+      "owner_pool_shares": 4980000000,
+      "sponsor": null
+    }
+  ],
+  "sponsorship_handoffs": []
+}
