@@ -43,7 +43,8 @@
       },
       "flags": 1,
       "sponsor": null,
-      "liquidity_pool_use_count": 2
+      "liquidity_pool_use_count": 2,
+      "last_modified_ledger_seq": 5413920
     }
   ],
   "pool_share_trustlines": [

@@ -144,6 +144,8 @@ pub struct CreditTrustlineState {
     pub sponsor: Option<String>,
     #[serde(default)]
     pub liquidity_pool_use_count: Option<u32>,
+    #[serde(default)]
+    pub last_modified_ledger_seq: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +334,15 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
     {
         errors.push("discovery manifest hash is invalid".to_owned());
     }
+    let mut manifest_pool_ids = std::collections::BTreeSet::new();
+    for pool_id in &snapshot.discovery.pool_ids {
+        if !manifest_pool_ids.insert(pool_id) {
+            errors.push(format!(
+                "duplicate pool ID in discovery manifest: {}",
+                pool_id
+            ));
+        }
+    }
     if let DiscoverySource::LedgerCapture { endpoint } = &snapshot.discovery.source
         && endpoint.trim().is_empty()
     {
@@ -446,6 +457,24 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
             errors.push(format!(
                 "account {} lastModifiedLedgerSeq {} is newer than snapshot ledger {}",
                 entry.id, seq, snapshot.ledger_sequence
+            ));
+        }
+    }
+    let mut trustline_keys = std::collections::BTreeSet::new();
+    for tl in &snapshot.trustlines {
+        let key = (&tl.owner, &tl.asset.code, &tl.asset.issuer);
+        if !trustline_keys.insert(key) {
+            errors.push(format!(
+                "duplicate trustline for owner {} and asset {}:{}",
+                tl.owner, tl.asset.code, tl.asset.issuer
+            ));
+        }
+        if let Some(seq) = tl.last_modified_ledger_seq
+            && seq > snapshot.ledger_sequence
+        {
+            errors.push(format!(
+                "trustline for owner {} and asset {}:{} lastModifiedLedgerSeq {} is newer than snapshot ledger {}",
+                tl.owner, tl.asset.code, tl.asset.issuer, seq, snapshot.ledger_sequence
             ));
         }
     }
@@ -889,6 +918,7 @@ mod tests {
                 flags: AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG,
                 sponsor: None,
                 liquidity_pool_use_count: None,
+                last_modified_ledger_seq: None,
             }],
             pool_share_trustlines: vec![PoolShareState {
                 pool_id: "pool-1".to_owned(),
@@ -1506,6 +1536,190 @@ mod tests {
                 .any(|w| w.contains("coverage is unproven; liquidityPoolUseCount not verified")),
             "expected unproven coverage warning, got: {:?}",
             report.warnings
+        );
+    }
+
+    #[test]
+    fn test_manifest_duplicate_pool_id_rejected() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Duplicate pool 1 in manifest
+        snapshot
+            .discovery
+            .pool_ids
+            .push(snapshot.discovery.pool_ids[0].clone());
+        snapshot.discovery.manifest_sha256 = discovery_manifest_sha256(
+            &snapshot.network_passphrase,
+            snapshot.ledger_sequence,
+            &snapshot.discovery.pool_ids,
+        );
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("duplicate pool ID in discovery manifest")),
+            "expected duplicate manifest pool ID error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_pool_share_owned_by_other_account_cannot_satisfy_counter() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Mutate pool 2 owner to another account
+        snapshot.pool_share_trustlines[1].owner =
+            "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned();
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "liquidityPoolUseCount (2) does not match discovered affected pools (1)"
+            )),
+            "expected count mismatch when pool is owned by different account, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_spurious_non_matching_pool_cannot_satisfy_counter() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Mutate pool 2 assets to not include the credit asset FLUTTER
+        snapshot.pool_share_trustlines[1].asset_a = "BTC".to_owned();
+        snapshot.pool_share_trustlines[1].asset_a_issuer =
+            "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned();
+        snapshot.pool_share_trustlines[1].asset_b = "ETH".to_owned();
+        snapshot.pool_share_trustlines[1].asset_b_issuer =
+            "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned();
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "liquidityPoolUseCount (2) does not match discovered affected pools (1)"
+            )),
+            "expected count mismatch when pool has non-matching assets, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_credit_trustline_newer_than_snapshot_rejected() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Target credit trustline is newer than snapshot ledger
+        snapshot.trustlines[0].last_modified_ledger_seq = Some(snapshot.ledger_sequence + 1);
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("newer than snapshot ledger")),
+            "expected trustline newer than snapshot error, got: {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn test_authoritative_reconciliation_count_mismatch_rejected() {
+        let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
+        let mut snapshot: Snapshot = serde_json::from_slice(fixture_bytes).unwrap();
+
+        // Reconciliation coverage reports 3 pools when trustline has 2
+        snapshot.discovery.coverage = DiscoveryCoverage::AuthoritativeReconciled {
+            liquidity_pool_use_count: 3,
+            verified_pool_count: 3,
+        };
+
+        let op = OperationSpec {
+            operation: "SetTrustLineFlags".to_owned(),
+            source_account: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            trustor: "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB".to_owned(),
+            sequence: 1,
+            operation_index: 0,
+            asset: CreditAsset {
+                code: "FLUTTER".to_owned(),
+                issuer: "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG".to_owned(),
+            },
+            before_flags: AUTHORIZED_FLAG,
+            after_flags: 0,
+        };
+
+        let report = evaluate(&op, &snapshot);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|e| e.contains(
+                "discovery coverage verified_pool_count 3 does not match snapshot affected pools 2"
+            )),
+            "expected coverage reconciliation mismatch error, got: {:?}",
+            report.errors
         );
     }
 }
