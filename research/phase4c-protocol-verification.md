@@ -22,7 +22,9 @@ source, compare them against `src/lib.rs`, `src/discovery.rs`, and
 unverifiable.
 
 Baseline: `main` at `3be3cc9` (PR #5 merged), 117 tests passing
-(`cargo test --locked`). After this phase: 122 tests passing.
+(`cargo test --locked`). After this phase: 129 tests passing (122 after
+the initial pass, plus 7 more added by the pool-shares-trust-line-count
+evidence-integrity correction below).
 
 ## 2. Source files independently fetched for this phase
 
@@ -60,7 +62,7 @@ operation and would otherwise have been missed).
 | Issuer-claimant skip / zero-amount skip | `TransactionUtils.cpp` `redeemIntoClaimableBalance` lambda: returns early (no claimable balance, a burn event instead) when `amount == 0` or `isIssuer(accountID, assetInPool)` | `lib.rs::evaluate`: `if amount > 0 && *asset_issuer != pool.owner` | **Confirmed correct.** |
 | Clawback flag inheritance on the created claimable balance | `TransactionUtils.cpp`: clawback is set on the new claimable balance iff the trustor's own credit trustline for that constituent asset `isClawbackEnabled()` at the time of redemption (native assets never inherit it) | `lib.rs::evaluate`: looks up the matching `CreditTrustlineState`, requires it to exist, be unambiguous, and not be newer than the snapshot ledger; fails closed (`eval_errors`) otherwise | **Confirmed correct**, and already defended by `test_evaluator_never_assumes_clawback_disabled_when_constituent_evidence_mismatched_or_missing` from Phase 4B. |
 | Claimable-balance ID derivation (`ENVELOPE_TYPE_POOL_REVOKE_OP_ID`) | `TransactionUtils.cpp::getRevokeID`: SHA-256 over `HashIDPreimage{type=POOL_REVOKE_OP_ID, revokeID={sourceAccount, seqNum, opNum, liquidityPoolID, asset}}` | `lib.rs::derive_pool_revoke_claimable_balance_id`, using `stellar_xdr::HashIdPreimage::PoolRevokeOpId` directly (the canonical XDR type, not a hand-rolled preimage layout) | **Confirmed correct.** Delegating to the XDR crate's own encoding removes an entire class of hand-transcription bugs. |
-| Sponsorship sandwich for the created claimable balance | `TransactionUtils.cpp`: if the pool-share trustline's sponsor is itself sponsored, the claimable balance is created under *that* sponsor's sponsor, not the immediate sponsor | `lib.rs::evaluate`: `active_replacement_sponsor` looked up from `snapshot.sponsorship_handoffs` | **Confirmed correct**, conditional on `sponsorship_handoffs` evidence being independently verified complete — already fails closed (`sponsorship_evidence_complete`) per Phase 4B. |
+| Sponsorship sandwich for the created claimable balance | `TransactionUtils.cpp`: if the pool-share trustline's sponsor is itself sponsored, the claimable balance is created under *that* sponsor's sponsor, not the immediate sponsor | `lib.rs::evaluate`: `active_replacement_sponsor` looked up from `snapshot.sponsorship_handoffs` | **Confirmed correct** for the arithmetic/lookup logic itself. This is *not* a claim that the engine can independently verify a caller-supplied `sponsorship_handoffs` list is complete or accurate — it cannot (see Section 6); `sponsorship_evidence_complete` fails closed to `Inconclusive`/`UnverifiedForecast` whenever that evidence is anything less than fully reconciled, per Phase 4B. |
 | Liquidity-pool counter changes (`poolSharesTrustLineCount` → pool entry deletion) | `TransactionUtils.cpp::decrementPoolSharesTrustLineCount`: erases the `LiquidityPoolEntry` once the count reaches 0 | **Gap found and fixed in this phase.** `PoolShareState.pool_shares_trust_line_count` (new, optional) + `PoolRedemptionForecast.pool_will_be_deleted` (new). Returns `None` with an explicit warning when evidence is absent; fails closed (`Inconclusive`) on contradictory evidence (count already 0 while the trustline still exists). | **Fixed.** Phase 4B's forecast omitted this spec-required output entirely. |
 | `liquidityPoolUseCount` decrement on constituent credit trustlines | `TransactionUtils.cpp::decrementLiquidityPoolUseCount` | Tracked only as a discovery-completeness check (`liquidity_pool_use_count` must match the number of discovered affected pools) — the *post-operation* decremented value is not forecast | **Documented limitation**, not fixed this phase: this is ledger bookkeeping, not itself a pass/fail condition, and forecasting the exact post-op value would require also forecasting every other pool this account participates in. Left out of scope; not required for the Classification/pass-fail contract. |
 | Protocol version gating (`SetTrustLineFlags` requires protocol ≥ 17; pool redemption requires ≥ `V_18`) | `TrustFlagsOpFrameBase.cpp` / `TransactionUtils.cpp`: `protocolVersionStartsFrom(ledgerVersion, ProtocolVersion::V_10\|V_18)` | `lib.rs::validate_snapshot`: rejects `protocol_version < 18` | **Confirmed conservative (not a bug).** RevokeTrace's floor (18) is stricter than core's actual minimum for the operation itself; this is intentional fail-closed behavior, not a discrepancy requiring correction. |
@@ -127,6 +129,27 @@ synthetic, explicitly-labeled constructions from Phase 4A/4B.**
    (warning) when evidence is missing and fail-closed (`Inconclusive`) on
    contradictory evidence. See commit "Forecast liquidity-pool counter
    deletion against verified pool evidence".
+
+2. **The `pool_shares_trust_line_count` extraction itself (the correction
+   above) silently downgraded a malformed counter to missing evidence.**
+   `src/discovery.rs` and `src/evidence.rs` both decoded the raw XDR
+   `i64` with `u32::try_from(...).ok()`, which collapses *any* invalid
+   value — negative, or larger than `u32::MAX` — into `None`. Downstream,
+   `None` is treated as "evidence not supplied" (an explicit warning,
+   `pool_will_be_deleted: None`), not as "evidence is malformed." A
+   negative or unrepresentable counter in a ledger entry is not merely
+   absent evidence; it is contradictory or corrupt evidence and must be
+   rejected outright. Fixed by validating the raw `i64` explicitly before
+   conversion in both files and returning `DiscoveryError::ParseError`
+   (→ `Classification::Inconclusive`) on failure, instead of swallowing
+   the error. A valid nonnegative counter (including `0`, which is
+   contradictory only in combination with an existing pool-share
+   trustline — see `contradictory_zero_pool_shares_trust_line_count_fails_closed`
+   in `src/lib.rs`, unaffected by this fix) is still retained exactly.
+   Covered by four new tests in each of `src/discovery.rs` and
+   `src/evidence.rs`: negative counter, unrepresentable (> `u32::MAX`)
+   counter, positive counter retained exactly, and zero counter retained
+   exactly (not collapsed to `None`) when a pool-share trustline exists.
 
 No other genuine discrepancies between the pinned stellar-core source and
 the Phase 4B implementation were found during this pass. Every other rule

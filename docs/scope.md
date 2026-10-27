@@ -97,6 +97,15 @@ Summary of outcome:
   to independently verify that the supplied handoff list is the complete
   and accurate operation stream of the real transaction, and a supplied
   handoff is not treated as proof that the full transaction is valid.
+- A follow-up review found that `pool_shares_trust_line_count` extraction
+  in `src/discovery.rs` and `src/evidence.rs` used `u32::try_from(...).ok()`,
+  which silently downgraded a negative or otherwise unrepresentable raw
+  ledger counter into "evidence not supplied" instead of rejecting it as
+  malformed. This has been corrected: both files now validate the raw
+  `i64` explicitly and return `Classification::Inconclusive` on an
+  invalid value, while a valid counter (including `0`) is still retained
+  exactly. 7 new tests cover negative, unrepresentable, positive, and
+  genuinely-missing counter evidence; 129 tests pass in total.
 
 ## Historical feasibility spike status
 

@@ -924,6 +924,13 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                                     .to_owned(),
                             ));
                         }
+                        let pool_shares_trust_line_count =
+                            u32::try_from(cp.pool_shares_trust_line_count).map_err(|_| {
+                                DiscoveryError::ParseError(format!(
+                                    "liquidity pool shares trust line count is negative or unrepresentable: {}",
+                                    cp.pool_shares_trust_line_count
+                                ))
+                            })?;
                         // Cryptographic verification of canonical pool ID
                         let derived_hash = derive_constant_product_pool_id(
                             &cp.params.asset_a,
@@ -960,10 +967,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                             owner_pool_shares: owner_shares,
                             sponsor: ptl_sponsor,
                             last_modified_ledger_seq: Some(pool_entry.last_modified_ledger_seq),
-                            pool_shares_trust_line_count: u32::try_from(
-                                cp.pool_shares_trust_line_count,
-                            )
-                            .ok(),
+                            pool_shares_trust_line_count: Some(pool_shares_trust_line_count),
                         }
                     }
                 },
@@ -1378,7 +1382,12 @@ mod tests {
         entry.to_xdr_base64(Limits::none()).unwrap()
     }
 
-    fn make_pool_entry_xdr(asset_a: Asset, asset_b: Asset, fee_bps: i32) -> (String, Hash, String) {
+    fn make_pool_entry_xdr_with_count(
+        asset_a: Asset,
+        asset_b: Asset,
+        fee_bps: i32,
+        pool_shares_trust_line_count: i64,
+    ) -> (String, Hash, String) {
         let pool_id = derive_constant_product_pool_id(&asset_a, &asset_b, fee_bps).unwrap();
         let pool_hex = hex::encode(pool_id.0);
         let entry = LedgerEntryData::LiquidityPool(LiquidityPoolEntry {
@@ -1393,7 +1402,7 @@ mod tests {
                     reserve_a: 10_000_000,
                     reserve_b: 20_000_000,
                     total_pool_shares: 1000,
-                    pool_shares_trust_line_count: 1,
+                    pool_shares_trust_line_count,
                 },
             ),
         });
@@ -1402,6 +1411,10 @@ mod tests {
             pool_id,
             pool_hex,
         )
+    }
+
+    fn make_pool_entry_xdr(asset_a: Asset, asset_b: Asset, fee_bps: i32) -> (String, Hash, String) {
+        make_pool_entry_xdr_with_count(asset_a, asset_b, fee_bps, 1)
     }
 
     fn make_sponsorship_ext_xdr(sponsor: Option<AccountId>) -> String {
@@ -1443,15 +1456,17 @@ mod tests {
         assert_eq!(sponsor_decoded, Some(sponsor_strkey));
     }
 
-    #[test]
-    fn test_positive_bounded_current_tip_rpc_classification() {
-        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+    fn acquire_evidence_with_pool_shares_trust_line_count(
+        count: i64,
+    ) -> Result<Snapshot, DiscoveryError> {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr_with_count(
             Asset::Native,
             Asset::CreditAlphanum4(AlphaNum4 {
                 asset_code: AssetCode4(*b"FLUT"),
                 issuer: issuer_id(),
             }),
             30,
+            count,
         );
 
         let mut mock = MockTransport::new();
@@ -1582,9 +1597,13 @@ mod tests {
             issuer: ISSUER_STRKEY.to_owned(),
         };
 
-        let snapshot = adapter
-            .acquire_live_evidence(TRUSTOR_STRKEY, &asset)
-            .expect("successful acquisition");
+        adapter.acquire_live_evidence(TRUSTOR_STRKEY, &asset)
+    }
+
+    #[test]
+    fn test_positive_bounded_current_tip_rpc_classification() {
+        let snapshot =
+            acquire_evidence_with_pool_shares_trust_line_count(1).expect("successful acquisition");
 
         assert_eq!(snapshot.ledger_sequence, 5000);
         assert_eq!(snapshot.base_reserve_stroops, Some(5_000_000));
@@ -1596,6 +1615,10 @@ mod tests {
         );
 
         // Preflight forecast remains UnverifiedForecast; SupportedSafe unreachable!
+        let asset = CreditAsset {
+            code: "FLUT".to_owned(),
+            issuer: ISSUER_STRKEY.to_owned(),
+        };
         let op = OperationSpec {
             operation: "SetTrustLineFlags".to_owned(),
             source_account: ISSUER_STRKEY.to_owned(),
@@ -1610,6 +1633,31 @@ mod tests {
         let report = evaluate(&op, &snapshot);
         assert_eq!(report.classification, Classification::UnverifiedForecast);
         assert_ne!(report.classification, Classification::SupportedSafe);
+    }
+
+    #[test]
+    fn test_negative_pool_shares_trust_line_count_fails_closed() {
+        let err = acquire_evidence_with_pool_shares_trust_line_count(-1).unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_unrepresentable_pool_shares_trust_line_count_fails_closed() {
+        let err = acquire_evidence_with_pool_shares_trust_line_count(i64::from(u32::MAX) + 1)
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_positive_pool_shares_trust_line_count_is_retained_exactly() {
+        let snapshot = acquire_evidence_with_pool_shares_trust_line_count(5)
+            .expect("a valid nonnegative counter must not be rejected");
+        assert_eq!(
+            snapshot.pool_share_trustlines[0].pool_shares_trust_line_count,
+            Some(5)
+        );
     }
 
     #[test]

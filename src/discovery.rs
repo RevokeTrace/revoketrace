@@ -975,6 +975,13 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                                     .to_owned(),
                             ));
                         }
+                        let pool_shares_trust_line_count =
+                            u32::try_from(cp.pool_shares_trust_line_count).map_err(|_| {
+                                DiscoveryError::ParseError(format!(
+                                    "liquidity pool shares trust line count is negative or unrepresentable: {}",
+                                    cp.pool_shares_trust_line_count
+                                ))
+                            })?;
                         // Cryptographic verification of canonical pool ID
                         let derived_hash = derive_constant_product_pool_id(
                             &cp.params.asset_a,
@@ -1009,10 +1016,7 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                             owner_pool_shares: owner_shares,
                             sponsor: None,
                             last_modified_ledger_seq: Some(pool_entry.last_modified_ledger_seq),
-                            pool_shares_trust_line_count: u32::try_from(
-                                cp.pool_shares_trust_line_count,
-                            )
-                            .ok(),
+                            pool_shares_trust_line_count: Some(pool_shares_trust_line_count),
                         }
                     }
                 },
@@ -1255,6 +1259,32 @@ mod tests {
                     reserve_b,
                     total_pool_shares,
                     pool_shares_trust_line_count: 1,
+                },
+            ),
+        });
+        entry.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_lp_entry_xdr_with_count(
+        pool_id: &Hash,
+        asset_a: &Asset,
+        asset_b: &Asset,
+        fee: i32,
+        pool_shares_trust_line_count: i64,
+    ) -> String {
+        let entry = LedgerEntryData::LiquidityPool(LiquidityPoolEntry {
+            liquidity_pool_id: PoolId(pool_id.clone()),
+            body: LiquidityPoolEntryBody::LiquidityPoolConstantProduct(
+                LiquidityPoolEntryConstantProduct {
+                    params: LiquidityPoolConstantProductParameters {
+                        asset_a: asset_a.clone(),
+                        asset_b: asset_b.clone(),
+                        fee,
+                    },
+                    reserve_a: 1_000_000_000,
+                    reserve_b: 2_000_000_000,
+                    total_pool_shares: 500_000_000,
+                    pool_shares_trust_line_count,
                 },
             ),
         });
@@ -2365,6 +2395,119 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DiscoveryError::MissingCounter(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pool-shares-trust-line-count evidence integrity
+    // -----------------------------------------------------------------------
+
+    fn discover_with_pool_shares_trust_line_count(count: i64) -> Result<Snapshot, DiscoveryError> {
+        let (pool1_hex, pool1_id, asset_a, asset_b) = get_canonical_pool1();
+        let target_ledger = 5000000;
+
+        let horizon_json = serde_json::json!({
+            "id": TRUSTOR_STRKEY,
+            "balances": [
+                { "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool1_hex, "balance": "100.0" }
+            ]
+        })
+        .to_string();
+
+        let k_trustor = key_to_b64(&LedgerKey::Account(LedgerKeyAccount {
+            account_id: trustor_id(),
+        }));
+        let k_issuer = key_to_b64(&LedgerKey::Account(LedgerKeyAccount {
+            account_id: issuer_id(),
+        }));
+        let mut flutter_code = [0u8; 12];
+        flutter_code[..7].copy_from_slice(b"FLUTTER");
+        let k_credit_tl = key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum12(AlphaNum12 {
+                asset_code: AssetCode12(flutter_code),
+                issuer: issuer_id(),
+            }),
+        }));
+        let k_ptl = key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool1_id.clone())),
+        }));
+        let k_lp = key_to_b64(&LedgerKey::LiquidityPool(LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool1_id.clone()),
+        }));
+
+        let rpc_json = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "latestLedger": target_ledger,
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 50_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUTTER", Some(1)), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool1_id, 100_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": k_lp, "xdr": make_lp_entry_xdr_with_count(&pool1_id, &asset_a, &asset_b, 30, count), "lastModifiedLedgerSeq": target_ledger }
+                ]
+            }
+        }).to_string();
+
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(horizon_json),
+        );
+        mock.set_post("https://rpc.example", Ok(rpc_json));
+
+        let pipeline = DiscoveryPipeline::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            "Test SDF Network ; September 2015",
+        );
+
+        pipeline.discover_and_verify(TRUSTOR_STRKEY, &credit_asset_flutter())
+    }
+
+    #[test]
+    fn test_discovery_negative_pool_shares_trust_line_count_fails_closed() {
+        let err = discover_with_pool_shares_trust_line_count(-1).unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_discovery_unrepresentable_pool_shares_trust_line_count_fails_closed() {
+        let err = discover_with_pool_shares_trust_line_count(i64::from(u32::MAX) + 1).unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_discovery_positive_pool_shares_trust_line_count_is_retained_exactly() {
+        let snapshot = discover_with_pool_shares_trust_line_count(3)
+            .expect("a valid nonnegative counter must not be rejected");
+        assert_eq!(
+            snapshot.pool_share_trustlines[0].pool_shares_trust_line_count,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn test_discovery_zero_pool_shares_trust_line_count_with_existing_trustline_is_not_silently_dropped()
+     {
+        // The owner's own pool-share trustline is present in this fixture (balance 100_000_000),
+        // so a reported counter of zero is contradictory, not missing evidence: discovery must
+        // retain it exactly as `Some(0)` rather than collapsing it into `None` (which the
+        // evaluator would otherwise treat as merely unforecastable instead of contradictory).
+        // `evaluate`'s own fail-closed handling of this contradiction is already covered by
+        // `contradictory_zero_pool_shares_trust_line_count_fails_closed` in lib.rs; this test
+        // only verifies the extraction layer does not silently downgrade it first.
+        let snapshot = discover_with_pool_shares_trust_line_count(0)
+            .expect("zero is representable as u32 and must be decoded, not rejected");
+        assert_eq!(
+            snapshot.pool_share_trustlines[0].pool_shares_trust_line_count,
+            Some(0)
+        );
     }
 
     // -----------------------------------------------------------------------
