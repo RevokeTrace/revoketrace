@@ -199,54 +199,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             ));
         }
 
-        // Step 1: Query getLatestLedger from Stellar RPC
-        let latest_ledger_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getLatestLedger"
-        });
-        let latest_ledger_resp_str = self
-            .transport
-            .post(&self.rpc_url, &latest_ledger_payload.to_string())?;
-        let latest_ledger_resp: LatestLedgerResponse =
-            serde_json::from_str(&latest_ledger_resp_str).map_err(|e| {
-                DiscoveryError::ParseError(format!(
-                    "failed to parse getLatestLedger response: {}",
-                    e
-                ))
-            })?;
-
-        if let Some(err) = latest_ledger_resp.error {
-            return Err(DiscoveryError::TransportError(format!(
-                "getLatestLedger RPC error: {:?}",
-                err
-            )));
-        }
-
-        let latest_ledger_result = latest_ledger_resp.result.ok_or_else(|| {
-            DiscoveryError::TransportError("missing result in getLatestLedger response".to_owned())
-        })?;
-
-        // Decode LedgerHeader from headerXdr
-        let header = decode_ledger_header(&latest_ledger_result.header_xdr)?;
-        let protocol_version = header.ledger_version;
-        if protocol_version < 18 {
-            return Err(DiscoveryError::UnsupportedProtocolVersion {
-                version: protocol_version,
-                minimum: 18,
-            });
-        }
-
-        let base_reserve_stroops = header.base_reserve as u64;
-        if base_reserve_stroops == 0 {
-            return Err(DiscoveryError::MissingReserveConfiguration(
-                "base_reserve in LedgerHeader is zero".to_owned(),
-            ));
-        }
-
-        let latest_ledger_seq = latest_ledger_result.sequence;
-
-        // Step 2: Tier 1 Candidate Enumeration via Horizon
+        // Step 1: Tier 1 Candidate Enumeration via Horizon
         let horizon_account_url = format!(
             "{}/accounts/{}",
             self.horizon_url.trim_end_matches('/'),
@@ -284,7 +237,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             }
         }
 
-        // Step 3: Tier 2 Single-Batch Atomic Request to Stellar RPC
+        // Step 2: Construct Atomic Ledger Keys
         let trustor_acc_id = AccountId(stellar_xdr::PublicKey::PublicKeyTypeEd25519(
             stellar_xdr::Uint256(trustor_bytes),
         ));
@@ -394,34 +347,141 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             });
         }
 
-        // Query Stellar RPC in a single batch
-        let rpc_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getLedgerEntries",
-            "params": {
-                "keys": keys_b64
-            }
-        });
-        let rpc_resp_str = self
-            .transport
-            .post(&self.rpc_url, &rpc_payload.to_string())?;
-        let rpc_resp: RpcResponse = serde_json::from_str(&rpc_resp_str).map_err(|e| {
-            DiscoveryError::ParseError(format!("failed to parse RPC response JSON: {}", e))
-        })?;
+        // Step 3: Atomic Snapshot Acquisition with Ledger Header-to-Entries Binding and Bounded Retry
+        const MAX_CAPTURE_ATTEMPTS: usize = 3;
+        let mut last_header = None;
+        let mut last_rpc_result = None;
 
-        if let Some(err) = rpc_resp.error {
-            return Err(DiscoveryError::TransportError(format!(
-                "RPC error returned: {:?}",
-                err
-            )));
+        for attempt in 0..MAX_CAPTURE_ATTEMPTS {
+            // 3a. Query getLatestLedger from Stellar RPC
+            let latest_ledger_payload = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getLatestLedger"
+            });
+            let latest_ledger_resp_str = self
+                .transport
+                .post(&self.rpc_url, &latest_ledger_payload.to_string())?;
+            let latest_ledger_resp: LatestLedgerResponse =
+                serde_json::from_str(&latest_ledger_resp_str).map_err(|e| {
+                    DiscoveryError::ParseError(format!(
+                        "failed to parse getLatestLedger response: {}",
+                        e
+                    ))
+                })?;
+
+            if let Some(err) = latest_ledger_resp.error {
+                return Err(DiscoveryError::TransportError(format!(
+                    "getLatestLedger RPC error: {:?}",
+                    err
+                )));
+            }
+
+            let latest_ledger_result = latest_ledger_resp.result.ok_or_else(|| {
+                DiscoveryError::TransportError(
+                    "missing result in getLatestLedger response".to_owned(),
+                )
+            })?;
+
+            // Validate ledger hash format (64-char hex)
+            if latest_ledger_result.id.len() != 64 || hex::decode(&latest_ledger_result.id).is_err()
+            {
+                return Err(DiscoveryError::ParseError(format!(
+                    "invalid ledger hash format in getLatestLedger: {}",
+                    latest_ledger_result.id
+                )));
+            }
+
+            // Decode LedgerHeader from headerXdr
+            let header = decode_ledger_header(&latest_ledger_result.header_xdr)?;
+            if header.ledger_seq != latest_ledger_result.sequence {
+                return Err(DiscoveryError::InconsistentLedgerSequence {
+                    entry_seq: header.ledger_seq,
+                    snapshot_seq: latest_ledger_result.sequence,
+                });
+            }
+
+            let protocol_version = header.ledger_version;
+            if protocol_version < 18 {
+                return Err(DiscoveryError::UnsupportedProtocolVersion {
+                    version: protocol_version,
+                    minimum: 18,
+                });
+            }
+
+            let base_reserve_stroops = header.base_reserve as u64;
+            if base_reserve_stroops == 0 {
+                return Err(DiscoveryError::MissingReserveConfiguration(
+                    "base_reserve in LedgerHeader is zero".to_owned(),
+                ));
+            }
+
+            // 3b. Query Stellar RPC getLedgerEntries in a single atomic batch
+            let rpc_payload = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getLedgerEntries",
+                "params": {
+                    "keys": keys_b64
+                }
+            });
+            let rpc_resp_str = self
+                .transport
+                .post(&self.rpc_url, &rpc_payload.to_string())?;
+            let rpc_resp: RpcResponse = serde_json::from_str(&rpc_resp_str).map_err(|e| {
+                DiscoveryError::ParseError(format!("failed to parse RPC response JSON: {}", e))
+            })?;
+
+            if let Some(err) = rpc_resp.error {
+                return Err(DiscoveryError::TransportError(format!(
+                    "RPC error returned: {:?}",
+                    err
+                )));
+            }
+
+            let rpc_result = rpc_resp.result.ok_or_else(|| {
+                DiscoveryError::TransportError("missing RPC result in response".to_owned())
+            })?;
+
+            // 3c. Strict Sequence Binding: verify header and entries correspond to the exact same ledger sequence!
+            if header.ledger_seq == rpc_result.latest_ledger {
+                last_header = Some(header);
+                last_rpc_result = Some(rpc_result);
+                break;
+            }
+
+            // Tip advanced between getLatestLedger and getLedgerEntries!
+            // If attempts remain, retry the entire capture atomically.
+            if attempt + 1 == MAX_CAPTURE_ATTEMPTS {
+                return Err(DiscoveryError::InconsistentLedgerSequence {
+                    entry_seq: rpc_result.latest_ledger,
+                    snapshot_seq: header.ledger_seq,
+                });
+            }
         }
 
-        let rpc_result = rpc_resp.result.ok_or_else(|| {
-            DiscoveryError::TransportError("missing RPC result in response".to_owned())
+        let (header, rpc_result) = last_header.zip(last_rpc_result).ok_or_else(|| {
+            DiscoveryError::TransportError(
+                "failed to synchronize ledger header and entries".to_owned(),
+            )
         })?;
 
-        let rpc_latest_ledger = rpc_result.latest_ledger;
+        let protocol_version = header.ledger_version;
+        if protocol_version < 18 {
+            return Err(DiscoveryError::UnsupportedProtocolVersion {
+                version: protocol_version,
+                minimum: 18,
+            });
+        }
+
+        let base_reserve_stroops = header.base_reserve as u64;
+        if base_reserve_stroops == 0 {
+            return Err(DiscoveryError::MissingReserveConfiguration(
+                "base_reserve in LedgerHeader is zero".to_owned(),
+            ));
+        }
+
+        let target_seq = header.ledger_seq;
 
         let entry_map = validate_rpc_entries(&rpc_result, &keys_b64)?;
 
@@ -769,7 +829,6 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
 
         matching_pool_ids.sort();
-        let target_seq = rpc_latest_ledger.max(latest_ledger_seq);
         let manifest_hash =
             discovery_manifest_sha256(&self.network_passphrase, target_seq, &matching_pool_ids);
 
@@ -813,7 +872,6 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
     /// - Protocol version validity
     pub fn validate_and_classify(
         snapshot: &Snapshot,
-        candidate_source_authoritative: bool,
     ) -> Result<EvidenceClassification, DiscoveryError> {
         // 1. Network Passphrase
         if snapshot.network_passphrase.trim().is_empty() {
@@ -912,24 +970,14 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
 
         // 6. Check for Forged Caller Claims
+        // CompleteAuthoritativeLedger cannot be claimed by caller-supplied snapshots without an independent capture verifier.
         if let Some(EvidenceClassification::CompleteAuthoritativeLedger) =
             snapshot.discovery.evidence_classification
         {
-            if !candidate_source_authoritative {
-                return Err(DiscoveryError::ForgedProvenance(
-                    "caller claimed CompleteAuthoritativeLedger without authoritative source proof"
-                        .to_owned(),
-                ));
-            }
-            if matches!(
-                snapshot.discovery.source,
-                DiscoverySource::TwoTierDiscovery { .. } | DiscoverySource::SyntheticFixture
-            ) {
-                return Err(DiscoveryError::ForgedProvenance(
-                    "TwoTierDiscovery or SyntheticFixture cannot produce CompleteAuthoritativeLedger"
-                        .to_owned(),
-                ));
-            }
+            return Err(DiscoveryError::ForgedProvenance(
+                "CompleteAuthoritativeLedger cannot be claimed by caller-supplied snapshots without an independent capture verifier"
+                    .to_owned(),
+            ));
         }
 
         // 7. Derive Property-Based Classification
@@ -963,11 +1011,10 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                 Ok(EvidenceClassification::BoundedCurrentTipRpc)
             }
             DiscoverySource::AuthoritativeExport { .. } => {
-                if candidate_source_authoritative {
-                    Ok(EvidenceClassification::CompleteAuthoritativeLedger)
-                } else {
-                    Ok(EvidenceClassification::LedgerConsistentIncomplete)
-                }
+                // Without an independent offline capture verifier (e.g. Captive Core / History Archive verifier),
+                // caller-supplied AuthoritativeExport snapshots cannot be verified as complete authoritative ledgers.
+                // CompleteAuthoritativeLedger is unreachable for caller-supplied snapshots; safely fail closed to LedgerConsistentIncomplete.
+                Ok(EvidenceClassification::LedgerConsistentIncomplete)
             }
         }
     }
@@ -1004,6 +1051,8 @@ mod tests {
     const OTHER_ISSUER_STRKEY: &str = "GA5Q3FBUPYK4T3BQDILVTDFN2TCLLNBDYABMFZRXTE2BLXP5CZXOQFWM";
 
     const REAL_HEADER_XDR: &str = "AAAAHVOZ89LSqu4moPER2wy1YzgGMuM/b3wyPKcdRQN/Aswnqa/ZJd33JpbuLrfIRUs+c+8c6VqiE3HZoJy1ltNTHfAAAAAAauCEewAAAAAAAAABAAAAAKgkzRi8nXUGTSmaW1uspDvDqi8yaTgVPYwvm7XLbfAzAAAAQA4z+hQOXMsqYo3iWXk5CS/6zEATkWcD1+/Ts+70aWJu48Yr0dyHQN/QTICN46IkBhSKVNp1jDnf5rRE06B6iQJU9qbQM8wMDwGVL+hhkoS1B2hNpTkGZFDTu876ZNf5uqkE6BJi0nthXbi6zQBu9ixyEJYGsfcxclb2z7kO8s7MAFKgjg3gtrOnZAAAAAAsg3ISKdwAAAAAAAAAAAAOPbEAAABkAExLQAAAAMit8ugw6geBSII5ilGJF1fNsTkMBwVWPjKX71e5e032oEfHJn9bZYdTKdNTJUAzzqPlp8Bx6O189JCSlKDqfX9yq/E23IeCb2hra2R9ZaEUej6hcg2AwbODCzvqDoaX82m2cm6r8ecN/675yBcoOos0c4aKRh6aDbiou7DptxnL1QAAAAA=";
+    const MOCK_LEDGER_HASH: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn trustor_id() -> AccountId {
         let bytes = decode_account_id(TRUSTOR_STRKEY).unwrap();
@@ -1226,7 +1275,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "id": "abc123hash",
+                "id": MOCK_LEDGER_HASH,
                 "protocolVersion": 29,
                 "sequence": 5000,
                 "headerXdr": make_header_xdr(29, 5000, 5_000_000)
@@ -1452,11 +1501,13 @@ mod tests {
         };
 
         let classification =
-            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
                 .expect("validation passed");
+        // Caller cannot promote to CompleteAuthoritativeLedger without independent capture verifier;
+        // safely evaluates to LedgerConsistentIncomplete
         assert_eq!(
             classification,
-            EvidenceClassification::CompleteAuthoritativeLedger
+            EvidenceClassification::LedgerConsistentIncomplete
         );
     }
 
@@ -1471,7 +1522,7 @@ mod tests {
             "getLatestLedger",
             Ok(serde_json::json!({
                 "jsonrpc": "2.0", "id": 1,
-                "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+                "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
             }).to_string()),
         );
         let pool_hex = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46";
@@ -1517,7 +1568,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
             "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
@@ -1604,7 +1655,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
             "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
@@ -1692,7 +1743,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
             "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
@@ -1794,7 +1845,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
             "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": forged_hex }]
@@ -1880,7 +1931,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
             "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
@@ -2155,9 +2206,8 @@ mod tests {
             sponsorship_handoffs: vec![],
         };
 
-        let err =
-            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
-                .unwrap_err();
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
         assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
     }
@@ -2165,10 +2215,19 @@ mod tests {
     #[test]
     fn test_adversarial_12_unsupported_protocol_version() {
         let mut mock = MockTransport::new();
+        // Horizon returns empty balances
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": []
+            })
+            .to_string()),
+        );
         // Return protocolVersion = 17 (pre-CAP-0038)
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 17, "sequence": 5000, "headerXdr": make_header_xdr(17, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 17, "sequence": 5000, "headerXdr": make_header_xdr(17, 5000, 5_000_000) }
         }).to_string()));
 
         let adapter = AuthoritativeEvidenceAdapter::new(
@@ -2243,9 +2302,8 @@ mod tests {
             sponsorship_handoffs: vec![],
         };
 
-        let err =
-            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, false)
-                .unwrap_err();
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
         assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
     }
@@ -2317,7 +2375,7 @@ mod tests {
         };
 
         let classification =
-            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
                 .unwrap();
         // Degrades to LedgerConsistentIncomplete because sponsor account is unverified!
         assert_eq!(
@@ -2357,7 +2415,7 @@ mod tests {
         };
 
         let classification =
-            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot, true)
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
                 .unwrap();
         assert_eq!(
             classification,
@@ -2393,7 +2451,7 @@ mod tests {
         let mut mock = MockTransport::new();
         mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": { "id": "id", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
         }).to_string()));
         // Horizon returns closed pool
         mock.set_get(format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY), Ok(serde_json::json!({
@@ -2423,6 +2481,444 @@ mod tests {
             err,
             DiscoveryError::StaleIndexerData(_) | DiscoveryError::ParseError(_)
         ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_18_deliberate_mismatched_ledger_sequences_fails_closed() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+        let mut mock = MockTransport::new();
+        // getLatestLedger returns ledger 5000
+        mock.set_post_method(
+            "getLatestLedger",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            })
+            .to_string()),
+        );
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY, "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+            })
+            .to_string()),
+        );
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash.clone()),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        // Deliberate sequence mismatch: getLedgerEntries returns latestLedger = 5001 != 5000!
+        mock.set_post_method(
+            "getLedgerEntries",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {
+                    "entries": [
+                        { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                        { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                        { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                        { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool_hash, 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                        { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    ],
+                    "latestLedger": 5001
+                }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .unwrap_err();
+        // Strict sequence binding fails closed when tip advances during capture and retry fails
+        assert!(matches!(
+            err,
+            DiscoveryError::InconsistentLedgerSequence {
+                entry_seq: 5001,
+                snapshot_seq: 5000
+            }
+        ));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[derive(Default)]
+    struct SequentialMockTransport {
+        ledger_call_count: std::sync::atomic::AtomicUsize,
+        horizon_response: String,
+        entries_response_5001: String,
+    }
+
+    impl HttpTransport for SequentialMockTransport {
+        fn post(&self, _url: &str, body: &str) -> Result<String, DiscoveryError> {
+            if body.contains("getLatestLedger") {
+                let count = self
+                    .ledger_call_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if count == 0 {
+                    // Attempt 0: header is at sequence 5000
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {
+                            "id": MOCK_LEDGER_HASH,
+                            "protocolVersion": 29,
+                            "sequence": 5000,
+                            "headerXdr": make_header_xdr(29, 5000, 5_000_000)
+                        }
+                    })
+                    .to_string())
+                } else {
+                    // Attempt 1: retry captures tip at sequence 5001 matching entries!
+                    Ok(serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": {
+                            "id": MOCK_LEDGER_HASH,
+                            "protocolVersion": 29,
+                            "sequence": 5001,
+                            "headerXdr": make_header_xdr(29, 5001, 5_000_000)
+                        }
+                    })
+                    .to_string())
+                }
+            } else if body.contains("getLedgerEntries") {
+                Ok(self.entries_response_5001.clone())
+            } else {
+                Err(DiscoveryError::TransportError("unexpected post".to_owned()))
+            }
+        }
+
+        fn get(&self, _url: &str) -> Result<String, DiscoveryError> {
+            Ok(self.horizon_response.clone())
+        }
+    }
+
+    #[test]
+    fn test_adversarial_19_bounded_retry_succeeds_when_tip_advances_transiently() {
+        let (pool_xdr, pool_hash, pool_hex) = make_pool_entry_xdr(
+            Asset::Native,
+            Asset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+            30,
+        );
+
+        let k_trustor = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: trustor_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_issuer = stellar_xdr::LedgerKey::Account(stellar_xdr::LedgerKeyAccount {
+            account_id: issuer_id(),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_credit_tl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum4(AlphaNum4 {
+                asset_code: AssetCode4(*b"FLUT"),
+                issuer: issuer_id(),
+            }),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_ptl = stellar_xdr::LedgerKey::Trustline(stellar_xdr::LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_hash.clone())),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+        let k_pool = stellar_xdr::LedgerKey::LiquidityPool(stellar_xdr::LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_hash.clone()),
+        })
+        .to_xdr_base64(Limits::none())
+        .unwrap();
+
+        let entries_response_5001 = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "entries": [
+                    { "key": k_trustor, "xdr": make_account_xdr(trustor_id(), 100), "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                    { "key": k_issuer, "xdr": make_account_xdr(issuer_id(), 500), "lastModifiedLedgerSeq": 4800, "extXdr": "AAAAAA==" },
+                    { "key": k_credit_tl, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUT", Some(1)), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_ptl, "xdr": make_pool_tl_xdr(trustor_id(), &pool_hash, 100), "lastModifiedLedgerSeq": 4950, "extXdr": "AAAAAA==" },
+                    { "key": k_pool, "xdr": pool_xdr, "lastModifiedLedgerSeq": 4900, "extXdr": "AAAAAA==" },
+                ],
+                "latestLedger": 5001
+            }
+        })
+        .to_string();
+
+        let transport = SequentialMockTransport {
+            ledger_call_count: std::sync::atomic::AtomicUsize::new(0),
+            horizon_response: serde_json::json!({
+                "id": TRUSTOR_STRKEY,
+                "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+            })
+            .to_string(),
+            entries_response_5001,
+        };
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            transport,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+
+        let snapshot = adapter
+            .acquire_live_evidence(
+                TRUSTOR_STRKEY,
+                &CreditAsset {
+                    code: "FLUT".to_owned(),
+                    issuer: ISSUER_STRKEY.to_owned(),
+                },
+            )
+            .expect("retry captures synchronized ledger state");
+
+        // Verified sequence is synchronized at 5001 without torn state
+        assert_eq!(snapshot.ledger_sequence, 5001);
+        assert_eq!(snapshot.entries_ledger_sequence, 5001);
+        assert_eq!(snapshot.discovery.target_ledger_sequence, 5001);
+    }
+
+    #[test]
+    fn test_adversarial_20_invalid_ledger_hash_format_rejected() {
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({
+                "id": TRUSTOR_STRKEY, "balances": []
+            })
+            .to_string()),
+        );
+        // id is not 64 hex characters
+        mock.set_post_method(
+            "getLatestLedger",
+            Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": "invalid-hash", "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            })
+            .to_string()),
+        );
+
+        let adapter = AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        );
+        let err = adapter
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_21_attempted_authority_promotion_rejected() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        // Caller crafts an AuthoritativeExport snapshot and sets evidence_classification = CompleteAuthoritativeLedger
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "core-export-ledger-5000".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1,
+                    verified_pool_count: 1,
+                },
+                evidence_classification: Some(EvidenceClassification::CompleteAuthoritativeLedger),
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        // CompleteAuthoritativeLedger MUST be unreachable for caller-supplied snapshots; must fail closed with ForgedProvenance
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
+        assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    #[test]
+    fn test_adversarial_22_forged_source_label_cannot_promote_to_complete() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+        let manifest_hash = discovery_manifest_sha256(NETWORK_PASSPHRASE, 5000, &pool_ids);
+
+        // Caller labels source as AuthoritativeExport without evidence_classification
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "forged_export_id".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids: pool_ids.clone(),
+                manifest_sha256: manifest_hash,
+                coverage: DiscoveryCoverage::AuthoritativeReconciled {
+                    liquidity_pool_use_count: 1,
+                    verified_pool_count: 1,
+                },
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![
+                AccountState {
+                    id: TRUSTOR_STRKEY.to_owned(),
+                    balance_stroops: 100_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 4,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4900),
+                },
+                AccountState {
+                    id: ISSUER_STRKEY.to_owned(),
+                    balance_stroops: 500_000_000,
+                    selling_liabilities_stroops: 0,
+                    subentries: 0,
+                    num_sponsoring: 0,
+                    num_sponsored: 0,
+                    last_modified_ledger_seq: Some(4800),
+                },
+            ],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        // Without an independent offline capture verifier, caller-supplied exports safely degrade to LedgerConsistentIncomplete
+        let classification =
+            AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+                .expect("validation passes but cannot promote");
+        assert_eq!(
+            classification,
+            EvidenceClassification::LedgerConsistentIncomplete
+        );
+        assert_ne!(
+            classification,
+            EvidenceClassification::CompleteAuthoritativeLedger
+        );
+    }
+
+    #[test]
+    fn test_adversarial_23_forged_manifest_digest_rejected() {
+        let pool_id = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46".to_owned();
+        let pool_ids = vec![pool_id.clone()];
+
+        // Forged manifest hash
+        let snapshot = Snapshot {
+            network_passphrase: NETWORK_PASSPHRASE.to_owned(),
+            ledger_sequence: 5000,
+            entries_ledger_sequence: 5000,
+            discovery: DiscoveryProof {
+                source: DiscoverySource::AuthoritativeExport {
+                    export_id: "export".to_owned(),
+                },
+                target_ledger_sequence: 5000,
+                pool_ids,
+                manifest_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_owned(),
+                coverage: DiscoveryCoverage::Unproven,
+                evidence_classification: None,
+            },
+            base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(29),
+            sponsorship_evidence_complete: true,
+            accounts: vec![],
+            trustlines: vec![],
+            pool_share_trustlines: vec![],
+            sponsorship_handoffs: vec![],
+        };
+
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::ForgedProvenance(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
     }
 }

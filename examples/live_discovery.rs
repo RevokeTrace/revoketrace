@@ -6,18 +6,24 @@
 //!    - Queries Stellar RPC `getLatestLedger`:
 //!      - Decodes `LedgerHeader` (`headerXdr`) to extract authoritative `base_reserve` (5,000,000 stroops).
 //!      - Extracts and asserts `protocolVersion >= 18` (Protocol 29 on Testnet).
+//!      - Validates ledger hash format (64-char hex) and binds sequence to entry batch.
 //!    - Queries Horizon `GET /accounts/{trustor}` to enumerate candidate liquidity-pool share IDs.
 //!    - Queries Stellar RPC `getLedgerEntries` in a single atomic batch:
+//!      - Enforces strict sequence binding between LedgerHeader and entry batch (`header.ledger_seq == rpc.latest_ledger`).
+//!      - Bounded atomic retry loop (up to 3 attempts) if tip advances during capture.
 //!      - Parses `xdr` (`LedgerEntryData`) and `extXdr` (`LedgerEntryExt`) to extract entry sponsorship.
 //!      - Cryptographically verifies canonical CAP-0038 constant-product pool IDs.
 //!      - Reconciles candidate pool count against on-chain `liquidityPoolUseCount == 2`.
 //! 2. Strict Evidence Classification Derivation:
-//!    - Derived property classification: `BoundedCurrentTipRpc`.
-//!    - Forged provenance rejection: caller attempting to claim `CompleteAuthoritativeLedger` is refused.
+//!    - Derived property classification: `BoundedCurrentTipRpc` (bounded candidate set, not complete export).
+//!    - CompleteAuthoritativeLedger is unreachable for caller-supplied snapshots; caller attempts to promote authority are refused.
 //! 3. Preflight Forecast Evaluation:
 //!    - Snapshot contains authoritative `base_reserve_stroops: Some(5_000_000)`.
 //!    - Evaluates preflight forecast: `UnverifiedForecast` maximum (`SupportedSafe` unreachable).
-//! 4. Fail-Closed Adversarial Guarantees across all 17 failure modes.
+//! 4. Fail-Closed Adversarial Guarantees across all failure modes (sequence torn states, missing reserves, forged claims).
+//!
+//! IMPORTANT: This live demonstration verifies a bounded candidate set at the current network tip.
+//! It does NOT claim or demonstrate an independently complete ledger export across arbitrary historical ledgers.
 
 use revoketrace_spike::{
     AUTHORIZED_FLAG, AuthoritativeEvidenceAdapter, Classification, CreditAsset, CurlTransport,
@@ -139,34 +145,31 @@ fn main() {
             // Step 2: Strict Evidence Trust Model Derivation
             println!("\n--- Step 2: Strict Evidence Trust Model Derivation ---");
             let derived_class =
-                AuthoritativeEvidenceAdapter::<CurlTransport>::validate_and_classify(
-                    &snapshot, false,
-                )
-                .expect("derived classification");
+                AuthoritativeEvidenceAdapter::<CurlTransport>::validate_and_classify(&snapshot)
+                    .expect("derived classification");
             assert_eq!(
                 derived_class,
                 EvidenceClassification::BoundedCurrentTipRpc,
-                "Derived classification for live capture must be BoundedCurrentTipRpc"
+                "Derived classification for live capture must be BoundedCurrentTipRpc (verifies bounded candidate set, not complete export)"
             );
             println!(
-                "  [ASSERTION PASSED] Property-derived classification: {:?}",
+                "  [ASSERTION PASSED] Property-derived classification: {:?} (bounded candidate set)",
                 derived_class
             );
 
-            // Forged provenance rejection test
+            // Forged provenance rejection test: caller-controlled authority promotion is impossible
             let mut forged_snapshot = snapshot.clone();
             forged_snapshot.discovery.evidence_classification =
                 Some(EvidenceClassification::CompleteAuthoritativeLedger);
             let forged_res = AuthoritativeEvidenceAdapter::<CurlTransport>::validate_and_classify(
                 &forged_snapshot,
-                false,
             );
             assert!(
                 matches!(forged_res, Err(DiscoveryError::ForgedProvenance(_))),
-                "Caller claiming CompleteAuthoritativeLedger without proof must be rejected"
+                "Caller claiming CompleteAuthoritativeLedger without independent capture verifier must be rejected"
             );
             println!(
-                "  [ASSERTION PASSED] Forged CompleteAuthoritativeLedger metadata was rejected"
+                "  [ASSERTION PASSED] Attempted CompleteAuthoritativeLedger authority promotion was rejected"
             );
 
             // Step 3: Preflight evaluation
@@ -290,10 +293,13 @@ fn main() {
     println!("  2. Entry-level sponsorship descriptors extracted from LedgerEntryExt (extXdr).");
     println!("  3. On-chain counter reconciliation ($K == N$) mathematically verified.");
     println!(
-        "  4. Property-derived trust model derives BoundedCurrentTipRpc and rejects forged claims."
+        "  4. Strict sequence binding (header.ledger_seq == rpc.latest_ledger) prevents torn-state captures."
     );
     println!(
-        "  5. Full completeness across arbitrary historical ledgers remains unproven without Captive Core."
+        "  5. Property-derived trust model derives BoundedCurrentTipRpc for bounded candidates; caller authority promotion is rejected."
+    );
+    println!(
+        "  6. Full candidate enumeration completeness across arbitrary historical ledgers remains unproven without Captive Core."
     );
     println!("============================================================\n");
 }
