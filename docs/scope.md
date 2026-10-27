@@ -19,11 +19,22 @@ No private keys, signing, transaction construction, broadcasting, automatic repa
 
 The engine must fail closed. The current spike can report `UNVERIFIED_FORECAST` when supplied data is internally coherent, but it cannot prove that every affected ledger entry was discovered. Missing pool discovery, missing sponsorship context, stale/mixed-ledger data, wrong network, unsupported protocol version, or unvalidated result mappings must produce `INCONCLUSIVE`. No current code path produces `SUPPORTED_SAFE`.
 
-The Phase 1C discovery prototype validates a bounded single-batch RPC response against exact
-requested keys and decoded XDR identities. It does not establish general candidate enumeration,
-network base-reserve configuration, or sponsorship identities/counters. When those preflight
-inputs are unavailable, the discovery result remains research evidence rather than a complete
-reserve or sponsorship snapshot.
+The Phase 1C discovery prototype validated a bounded single-batch RPC response against exact
+requested keys and decoded XDR identities. Phase 4A establishes the authoritative ledger evidence
+adapter and trust model:
+- Evidence classifications are strictly derived from verified properties: `UntrustedCandidate`,
+  `BoundedCurrentTipRpc`, `LedgerConsistentIncomplete`, `CompleteAuthoritativeLedger` (reserved), and `InvalidOrContradictory`.
+- Public RPC queries fetch `getLatestLedger` to extract authoritative `base_reserve` and `protocolVersion`
+  from `headerXdr`, and parse `extXdr` on `getLedgerEntries` to extract ledger entry `sponsoring_id`.
+- Strict sequence binding binds `header.ledger_seq == rpc.latest_ledger` with a bounded atomic retry loop,
+  rejecting torn-state captures across ledger transitions.
+- Caller-supplied booleans, enums, manifest digests, or labels can never promote evidence to authoritative completeness.
+  `CompleteAuthoritativeLedger` is unreachable for caller-supplied snapshots until an independent capture verifier exists.
+- The live demonstration verifies a bounded candidate set at the current network tip (`BoundedCurrentTipRpc`),
+  not an independently complete ledger export.
+- Treating a ledger-close delta (`LedgerCloseMeta`) as a complete state snapshot is rejected.
+- When full historical state, complete sponsor account graphs, or base-reserve configurations are
+  unverified, evidence remains bounded or incomplete. `SUPPORTED_SAFE` remains strictly unreachable.
 
 ## Phase 1 status
 

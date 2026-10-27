@@ -14,9 +14,13 @@ use stellar_xdr::{
 };
 
 pub mod discovery;
+pub mod evidence;
 pub use discovery::{
     CurlTransport, DiscoveryError, DiscoveryPipeline, HorizonAccountResponse, HorizonBalance,
     HttpTransport, MockTransport, decode_account_id, encode_account_id,
+};
+pub use evidence::{
+    AuthoritativeCaptureArtifact, AuthoritativeEvidenceAdapter, EvidenceClassification,
 };
 
 pub const AUTHORIZED_FLAG: u32 = 1;
@@ -202,6 +206,9 @@ pub enum DiscoverySource {
         horizon_endpoint: String,
         rpc_endpoint: String,
     },
+    AuthoritativeExport {
+        export_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -222,6 +229,8 @@ pub struct DiscoveryProof {
     pub manifest_sha256: String,
     #[serde(default)]
     pub coverage: DiscoveryCoverage,
+    #[serde(default)]
+    pub evidence_classification: Option<EvidenceClassification>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +241,8 @@ pub struct Snapshot {
     pub discovery: DiscoveryProof,
     #[serde(default)]
     pub base_reserve_stroops: Option<u64>,
+    #[serde(default)]
+    pub protocol_version: Option<u32>,
     /// False when the source cannot prove sponsorship identities and counters.
     #[serde(default)]
     pub sponsorship_evidence_complete: bool,
@@ -375,6 +386,16 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         if rpc_endpoint.trim().is_empty() {
             errors.push("discovery rpc endpoint is empty".to_owned());
         }
+    }
+    if let DiscoverySource::AuthoritativeExport { export_id } = &snapshot.discovery.source
+        && export_id.trim().is_empty()
+    {
+        errors.push("authoritative export ID is empty".to_owned());
+    }
+    if let Some(protocol_version) = snapshot.protocol_version
+        && protocol_version < 18
+    {
+        errors.push("unsupported protocol version: protocol version is below 18".to_owned());
     }
     if snapshot
         .base_reserve_stroops
@@ -916,8 +937,10 @@ mod tests {
                     "invalid".to_owned()
                 },
                 coverage: DiscoveryCoverage::Unproven,
+                evidence_classification: None,
             },
             base_reserve_stroops: Some(5_000_000),
+            protocol_version: Some(20),
             sponsorship_evidence_complete: true,
             accounts: vec![
                 AccountState {
