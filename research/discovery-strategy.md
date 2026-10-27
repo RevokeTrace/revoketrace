@@ -53,16 +53,20 @@ Return `INCONCLUSIVE`, never `UNVERIFIED_FORECAST` or `SUPPORTED_SAFE`, when any
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository demonstrates a bounded Phase 1B two-tier discovery-verification shape:
+The current repository demonstrates a bounded Phase 1B and Phase 1C two-tier discovery-verification shape:
+- Autonomous Candidate Enumeration: Horizon `/accounts/{trustor}` balances enumerate candidate pool-share trustlines without caller-supplied pool IDs.
+- Atomic Single-Batch Core Verification: Candidate pools, target credit trustline, and accounts are fetched in a single RPC `getLedgerEntries` batch at the current ledger tip.
 - The target credit trustline's `liquidityPoolUseCount` is checked against discovered pool-share trustlines.
 - Pool IDs are cryptographically derived from canonical constant-product parameters (`derive_constant_product_pool_id`).
-- A bounded live RPC observation checks a caller-selected set of exact keys at the current tip; response order is irrelevant, and missing, duplicate, unexpected, malformed, or contradictory entries are refused.
+- A bounded live RPC observation checks exact keys at the current tip; response order is irrelevant, and missing, duplicate, unexpected, malformed, or contradictory entries are refused.
 - Separately, an offline recorded network-response fixture ([`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json)) is replayed at Stellar Testnet ledger 5413920 by the executable demonstration ([`examples/live_discovery.rs`](../examples/live_discovery.rs)). The live observation is never combined with that historical fixture into one verified snapshot.
-- Full candidate enumeration is not implemented, and historical ledger consistency is not proven. If the live request fails, live status is unavailable while offline replay remains an independent research result.
+- Historical ledger consistency is not proven on public RPC endpoints without Captive Core. If any check fails, the evaluation returns `INCONCLUSIVE`.
 - Deep research findings are documented in:
   - [`authoritative-core-discovery.md`](authoritative-core-discovery.md): Stellar Core internal discovery mechanics and protocol invariants.
   - [`discovery-architectures.md`](discovery-architectures.md): Comparison of RPC, Horizon, Captive Core, and Indexers.
+  - [`trusted-discovery-sources.md`](trusted-discovery-sources.md): Comprehensive evaluation of candidate sources and two-tier architecture.
+  - [`ledger-consistency-models.md`](ledger-consistency-models.md): Detailed investigation of consistency guarantees, tip vs historical state, and fault detection.
   - [`selected-architecture.md`](selected-architecture.md): Two-Tier Verifiable Discovery Architecture and mathematical completeness proof.
   - [`discovery-feasibility-proof.md`](discovery-feasibility-proof.md): Recorded network fixture evaluation, live RPC constraints, and failure invariants.
 
-Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`. No actual revocation transaction was executed. Live discovery feasibility remains **PLAUSIBLE BUT UNPROVEN**, and Phase 2 remains blocked.
+Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`. No actual revocation transaction was executed. Live discovery feasibility remains **PARTIALLY DEMONSTRATED**, and Phase 2 remains blocked until trusted capture streaming is integrated.
