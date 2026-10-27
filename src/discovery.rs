@@ -1,8 +1,9 @@
-//! Trusted Discovery Prototype for Phase 1C: Two-Tier Candidate Enumeration and Atomic Core Verification.
+//! Research-only Discovery Prototype for Phase 1C: Two-Tier Candidate Enumeration and Bounded RPC Verification.
 //!
 //! Tier 1: Blind candidate enumeration via Horizon account balance views.
 //! Tier 2: Atomic single-batch verification via Stellar RPC `getLedgerEntries` at the current tip.
-//! Reconciles candidate pools pairing the target credit asset against on-chain `liquidityPoolUseCount`.
+//! Reconciles supplied candidate pools pairing the target credit asset against on-chain
+//! `liquidityPoolUseCount`.
 //! All failures fail closed as `Inconclusive`.
 
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,13 @@ fn account_id_to_bytes(acc: &AccountId) -> [u8; 32] {
     }
 }
 
+fn decode_pool_id(pool_id: &str) -> Result<PoolId, DiscoveryError> {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(pool_id, &mut bytes)
+        .map_err(|e| DiscoveryError::ParseError(format!("invalid pool ID: {}", e)))?;
+    Ok(PoolId(Hash(bytes)))
+}
+
 fn asset_to_parts(asset: &Asset) -> (String, String) {
     match asset {
         Asset::Native => ("XLM".to_owned(), "native".to_owned()),
@@ -153,6 +161,10 @@ pub enum DiscoveryError {
         discovered_count: u32,
     },
     StaleIndexerData(String),
+    RpcBatchTooLarge {
+        requested: usize,
+        maximum: usize,
+    },
 }
 
 impl std::fmt::Display for DiscoveryError {
@@ -197,6 +209,11 @@ impl std::fmt::Display for DiscoveryError {
                 )
             }
             Self::StaleIndexerData(s) => write!(f, "stale indexer data: {}", s),
+            Self::RpcBatchTooLarge { requested, maximum } => write!(
+                f,
+                "RPC batch contains {} keys, exceeding the single-request maximum of {}",
+                requested, maximum
+            ),
         }
     }
 }
@@ -370,6 +387,54 @@ pub struct RpcResponse {
     pub error: Option<serde_json::Value>,
 }
 
+pub const MAX_RPC_GET_LEDGER_ENTRIES_KEYS: usize = 200;
+
+fn validate_rpc_entries<'a>(
+    result: &'a RpcResult,
+    requested_keys: &[String],
+) -> Result<std::collections::BTreeMap<String, &'a RpcEntry>, DiscoveryError> {
+    let mut requested = std::collections::BTreeSet::new();
+    for key in requested_keys {
+        if !requested.insert(key) {
+            return Err(DiscoveryError::ParseError(format!(
+                "duplicate requested ledger key: {}",
+                key
+            )));
+        }
+    }
+
+    let mut entries = std::collections::BTreeMap::new();
+    for entry in &result.entries {
+        if !requested.contains(&entry.key) {
+            return Err(DiscoveryError::ParseError(format!(
+                "unexpected returned ledger key: {}",
+                entry.key
+            )));
+        }
+        if entries.insert(entry.key.clone(), entry).is_some() {
+            return Err(DiscoveryError::ParseError(format!(
+                "duplicate returned ledger key: {}",
+                entry.key
+            )));
+        }
+        if entry.last_modified_ledger_seq > result.latest_ledger {
+            return Err(DiscoveryError::InconsistentLedgerSequence {
+                entry_seq: entry.last_modified_ledger_seq,
+                snapshot_seq: result.latest_ledger,
+            });
+        }
+    }
+    for key in requested_keys {
+        if !entries.contains_key(key) {
+            return Err(DiscoveryError::ParseError(format!(
+                "missing required ledger key: {}",
+                key
+            )));
+        }
+    }
+    Ok(entries)
+}
+
 // ---------------------------------------------------------------------------
 // Discovery Pipeline
 // ---------------------------------------------------------------------------
@@ -431,6 +496,12 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
             serde_json::from_str(&horizon_body).map_err(|e| {
                 DiscoveryError::ParseError(format!("failed to parse Horizon account JSON: {}", e))
             })?;
+        if horizon_acc.id != trustor {
+            return Err(DiscoveryError::ParseError(format!(
+                "Horizon account identity mismatch: expected {}, found {}",
+                trustor, horizon_acc.id
+            )));
+        }
 
         let mut candidate_pool_ids = Vec::new();
         let mut seen_pool_ids = std::collections::BTreeSet::new();
@@ -501,13 +572,22 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
         };
         let k_credit_tl = LedgerKey::Trustline(LedgerKeyTrustLine {
             account_id: trustor_acc_id.clone(),
-            asset: tl_asset,
+            asset: tl_asset.clone(),
         });
         let k_credit_tl_b64 = k_credit_tl
             .to_xdr_base64(Limits::none())
             .map_err(|e| DiscoveryError::ParseError(e.to_string()))?;
         key_credit_tl.clone_from(&k_credit_tl_b64);
         keys_b64.push(k_credit_tl_b64);
+        let target_asset = match &tl_asset {
+            TrustLineAsset::CreditAlphanum4(a) => Asset::CreditAlphanum4(a.clone()),
+            TrustLineAsset::CreditAlphanum12(a) => Asset::CreditAlphanum12(a.clone()),
+            TrustLineAsset::Native | TrustLineAsset::PoolShare(_) => {
+                return Err(DiscoveryError::ParseError(
+                    "target asset must be a credit asset".to_owned(),
+                ));
+            }
+        };
 
         // 4. Candidate Pool-Share Trustlines and Liquidity Pools
         for pool_id in &candidate_pool_ids {
@@ -535,6 +615,13 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                 .map_err(|e| DiscoveryError::ParseError(e.to_string()))?;
             key_pools.push((pool_id.clone(), k_pool_b64.clone()));
             keys_b64.push(k_pool_b64);
+        }
+
+        if keys_b64.len() > MAX_RPC_GET_LEDGER_ENTRIES_KEYS {
+            return Err(DiscoveryError::RpcBatchTooLarge {
+                requested: keys_b64.len(),
+                maximum: MAX_RPC_GET_LEDGER_ENTRIES_KEYS,
+            });
         }
 
         // Query Stellar RPC in a single batch
@@ -566,18 +653,7 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
 
         let latest_ledger = rpc_result.latest_ledger;
 
-        // Map entries by key
-        let mut entry_map = std::collections::BTreeMap::new();
-        for entry in &rpc_result.entries {
-            // Check sequence consistency
-            if entry.last_modified_ledger_seq > latest_ledger {
-                return Err(DiscoveryError::InconsistentLedgerSequence {
-                    entry_seq: entry.last_modified_ledger_seq,
-                    snapshot_seq: latest_ledger,
-                });
-            }
-            entry_map.insert(entry.key.clone(), entry);
-        }
+        let entry_map = validate_rpc_entries(&rpc_result, &keys_b64)?;
 
         // Parse Trustor Account
         let trustor_entry = entry_map
@@ -589,15 +665,33 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
             })?;
         let trustor_state = match trustor_data {
             LedgerEntryData::Account(acc) => {
+                if acc.account_id != trustor_acc_id {
+                    return Err(DiscoveryError::WrongTrustor {
+                        expected: trustor.to_owned(),
+                        found: encode_account_id(&account_id_to_bytes(&acc.account_id)),
+                    });
+                }
+                if acc.balance < 0 {
+                    return Err(DiscoveryError::ParseError(
+                        "trustor account contains a negative balance or liability".to_owned(),
+                    ));
+                }
                 let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
-                    AccountEntryExt::V1(v1) => match v1.ext {
-                        AccountEntryExtensionV1Ext::V2(v2) => (
-                            v1.liabilities.selling as u64,
-                            v2.num_sponsoring,
-                            v2.num_sponsored,
-                        ),
-                        _ => (v1.liabilities.selling as u64, 0, 0),
-                    },
+                    AccountEntryExt::V1(v1) => {
+                        if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
+                            return Err(DiscoveryError::ParseError(
+                                "trustor account contains a negative liability".to_owned(),
+                            ));
+                        }
+                        match v1.ext {
+                            AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.selling as u64,
+                                v2.num_sponsoring,
+                                v2.num_sponsored,
+                            ),
+                            _ => (v1.liabilities.selling as u64, 0, 0),
+                        }
+                    }
                     _ => (0, 0, 0),
                 };
                 AccountState {
@@ -627,15 +721,32 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
             })?;
         let issuer_state = match issuer_data {
             LedgerEntryData::Account(acc) => {
+                if acc.account_id != issuer_acc_id {
+                    return Err(DiscoveryError::ParseError(
+                        "issuer account XDR identity contradicts requested key".to_owned(),
+                    ));
+                }
+                if acc.balance < 0 {
+                    return Err(DiscoveryError::ParseError(
+                        "issuer account contains a negative balance or liability".to_owned(),
+                    ));
+                }
                 let (selling_liab, num_sponsoring, num_sponsored) = match acc.ext {
-                    AccountEntryExt::V1(v1) => match v1.ext {
-                        AccountEntryExtensionV1Ext::V2(v2) => (
-                            v1.liabilities.selling as u64,
-                            v2.num_sponsoring,
-                            v2.num_sponsored,
-                        ),
-                        _ => (v1.liabilities.selling as u64, 0, 0),
-                    },
+                    AccountEntryExt::V1(v1) => {
+                        if v1.liabilities.buying < 0 || v1.liabilities.selling < 0 {
+                            return Err(DiscoveryError::ParseError(
+                                "issuer account contains a negative liability".to_owned(),
+                            ));
+                        }
+                        match v1.ext {
+                            AccountEntryExtensionV1Ext::V2(v2) => (
+                                v1.liabilities.selling as u64,
+                                v2.num_sponsoring,
+                                v2.num_sponsored,
+                            ),
+                            _ => (v1.liabilities.selling as u64, 0, 0),
+                        }
+                    }
                     _ => (0, 0, 0),
                 };
                 AccountState {
@@ -666,6 +777,22 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
 
         let (flags, liquidity_pool_use_count) = match credit_tl_data {
             LedgerEntryData::Trustline(tl) => {
+                if tl.account_id != trustor_acc_id {
+                    return Err(DiscoveryError::WrongTrustor {
+                        expected: trustor.to_owned(),
+                        found: encode_account_id(&account_id_to_bytes(&tl.account_id)),
+                    });
+                }
+                if tl.asset != tl_asset {
+                    return Err(DiscoveryError::ParseError(
+                        "credit trustline asset identity contradicts requested key".to_owned(),
+                    ));
+                }
+                if tl.balance < 0 || tl.limit < 0 {
+                    return Err(DiscoveryError::ParseError(
+                        "credit trustline contains a negative balance or limit".to_owned(),
+                    ));
+                }
                 let use_count = match tl.ext {
                     TrustLineEntryExt::V1(v1) => match v1.ext {
                         TrustLineEntryV1Ext::V2(v2) => {
@@ -709,6 +836,7 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
         let mut matching_pool_ids = Vec::new();
 
         for (pool_id, k_pool_b64) in &key_pools {
+            let expected_pool_id = decode_pool_id(pool_id)?;
             let pool_entry = entry_map.get(k_pool_b64).ok_or_else(|| {
                 DiscoveryError::StaleIndexerData(format!(
                     "liquidity pool {} returned by Horizon missing on-chain",
@@ -739,6 +867,17 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                             found: encode_account_id(&account_id_to_bytes(&tl.account_id)),
                         });
                     }
+                    if tl.asset != TrustLineAsset::PoolShare(expected_pool_id.clone()) {
+                        return Err(DiscoveryError::ParseError(
+                            "pool-share trustline asset identity contradicts requested pool"
+                                .to_owned(),
+                        ));
+                    }
+                    if tl.balance < 0 {
+                        return Err(DiscoveryError::ParseError(
+                            "pool-share trustline balance cannot be negative".to_owned(),
+                        ));
+                    }
                     tl.balance as u64
                 }
                 _ => {
@@ -751,6 +890,22 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
             let pool_state = match pool_data {
                 LedgerEntryData::LiquidityPool(lp) => match lp.body {
                     LiquidityPoolEntryBody::LiquidityPoolConstantProduct(cp) => {
+                        if lp.liquidity_pool_id != expected_pool_id {
+                            return Err(DiscoveryError::ParseError(
+                                "liquidity pool entry identity contradicts requested pool"
+                                    .to_owned(),
+                            ));
+                        }
+                        if cp.reserve_a < 0
+                            || cp.reserve_b < 0
+                            || cp.total_pool_shares < 0
+                            || cp.params.fee < 0
+                        {
+                            return Err(DiscoveryError::ParseError(
+                                "liquidity pool reserves and total shares cannot be negative"
+                                    .to_owned(),
+                            ));
+                        }
                         // Cryptographic verification of canonical pool ID
                         let derived_hash = derive_constant_product_pool_id(
                             &cp.params.asset_a,
@@ -795,10 +950,20 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                 }
             };
 
-            // Check if this pool pairs the target credit asset
-            let pairs_target_asset = (pool_state.asset_a == asset.code
-                && pool_state.asset_a_issuer == asset.issuer)
-                || (pool_state.asset_b == asset.code && pool_state.asset_b_issuer == asset.issuer);
+            // Check the decoded XDR asset identity, not display strings alone.
+            let pool_entry = entry_map
+                .get(k_pool_b64)
+                .ok_or_else(|| DiscoveryError::MissingLiquidityPoolEntry(pool_id.clone()))?;
+            let pool_data = LedgerEntryData::from_xdr_base64(&pool_entry.xdr, Limits::none())
+                .map_err(|e| DiscoveryError::ParseError(format!("pool XDR decode error: {}", e)))?;
+            let pairs_target_asset = match pool_data {
+                LedgerEntryData::LiquidityPool(lp) => match lp.body {
+                    LiquidityPoolEntryBody::LiquidityPoolConstantProduct(cp) => {
+                        cp.params.asset_a == target_asset || cp.params.asset_b == target_asset
+                    }
+                },
+                _ => false,
+            };
 
             if pairs_target_asset {
                 matching_pool_ids.push(pool_id.clone());
@@ -836,7 +1001,11 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                     verified_pool_count: discovered_count,
                 },
             },
-            base_reserve_stroops: 5_000_000,
+            // The public RPC response does not establish the network's base-reserve
+            // configuration or ledger-entry sponsorship identities. Keep this result
+            // as discovery evidence only; do not promote it to a complete preflight.
+            base_reserve_stroops: None,
+            sponsorship_evidence_complete: false,
             accounts: vec![trustor_state, issuer_state],
             trustlines: vec![credit_tl_state],
             pool_share_trustlines: affected_pools,
@@ -986,7 +1155,15 @@ mod tests {
         entry.to_xdr_base64(Limits::none()).unwrap()
     }
 
-    fn make_lp_entry_xdr(pool_id: &Hash, asset_a: &Asset, asset_b: &Asset, fee: i32) -> String {
+    fn make_lp_entry_xdr_with_values(
+        pool_id: &Hash,
+        asset_a: &Asset,
+        asset_b: &Asset,
+        fee: i32,
+        reserve_a: i64,
+        reserve_b: i64,
+        total_pool_shares: i64,
+    ) -> String {
         let entry = LedgerEntryData::LiquidityPool(LiquidityPoolEntry {
             liquidity_pool_id: PoolId(pool_id.clone()),
             body: LiquidityPoolEntryBody::LiquidityPoolConstantProduct(
@@ -996,14 +1173,26 @@ mod tests {
                         asset_b: asset_b.clone(),
                         fee,
                     },
-                    reserve_a: 1_000_000_000,
-                    reserve_b: 2_000_000_000,
-                    total_pool_shares: 500_000_000,
+                    reserve_a,
+                    reserve_b,
+                    total_pool_shares,
                     pool_shares_trust_line_count: 1,
                 },
             ),
         });
         entry.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn make_lp_entry_xdr(pool_id: &Hash, asset_a: &Asset, asset_b: &Asset, fee: i32) -> String {
+        make_lp_entry_xdr_with_values(
+            pool_id,
+            asset_a,
+            asset_b,
+            fee,
+            1_000_000_000,
+            2_000_000_000,
+            500_000_000,
+        )
     }
 
     fn get_canonical_pool1() -> (String, Hash, Asset, Asset) {
@@ -1036,6 +1225,255 @@ mod tests {
 
     fn key_to_b64(key: &LedgerKey) -> String {
         key.to_xdr_base64(Limits::none()).unwrap()
+    }
+
+    fn single_pool_rpc_value() -> serde_json::Value {
+        let (_, pool_id, asset_a, asset_b) = get_canonical_pool1();
+        let target_ledger = 5_000_000;
+        let credit_key = key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum12(AlphaNum12 {
+                asset_code: AssetCode12(*b"FLUTTER\0\0\0\0\0"),
+                issuer: issuer_id(),
+            }),
+        }));
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "latestLedger": target_ledger,
+                "entries": [
+                    { "key": key_to_b64(&LedgerKey::Account(LedgerKeyAccount { account_id: trustor_id() })), "xdr": make_account_xdr(trustor_id(), 100_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": key_to_b64(&LedgerKey::Account(LedgerKeyAccount { account_id: issuer_id() })), "xdr": make_account_xdr(issuer_id(), 50_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": credit_key, "xdr": make_credit_tl_xdr(trustor_id(), issuer_id(), "FLUTTER", Some(1)), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine { account_id: trustor_id(), asset: TrustLineAsset::PoolShare(PoolId(pool_id.clone())) })), "xdr": make_pool_tl_xdr(trustor_id(), &pool_id, 100_000_000), "lastModifiedLedgerSeq": target_ledger },
+                    { "key": key_to_b64(&LedgerKey::LiquidityPool(LedgerKeyLiquidityPool { liquidity_pool_id: PoolId(pool_id.clone()) })), "xdr": make_lp_entry_xdr(&pool_id, &asset_a, &asset_b, 30), "lastModifiedLedgerSeq": target_ledger }
+                ]
+            }
+        })
+    }
+
+    fn run_single_pool_rpc(rpc_value: serde_json::Value) -> Result<Snapshot, DiscoveryError> {
+        let (pool_hex, _, _, _) = get_canonical_pool1();
+        let horizon_json = serde_json::json!({
+            "id": TRUSTOR_STRKEY,
+            "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+        })
+        .to_string();
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(horizon_json),
+        );
+        mock.set_post("https://rpc.example", Ok(rpc_value.to_string()));
+        let pipeline = DiscoveryPipeline::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            "Test SDF Network ; September 2015",
+        );
+        pipeline.discover_and_verify(TRUSTOR_STRKEY, &credit_asset_flutter())
+    }
+
+    fn rpc_entry_by_key<'a>(
+        value: &'a mut serde_json::Value,
+        key: &str,
+    ) -> &'a mut serde_json::Value {
+        value["result"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|entry| entry["key"] == key)
+            .unwrap()
+    }
+
+    fn single_pool_credit_key() -> String {
+        key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::CreditAlphanum12(AlphaNum12 {
+                asset_code: AssetCode12(*b"FLUTTER\0\0\0\0\0"),
+                issuer: issuer_id(),
+            }),
+        }))
+    }
+
+    fn single_pool_share_key(pool_id: Hash) -> String {
+        key_to_b64(&LedgerKey::Trustline(LedgerKeyTrustLine {
+            account_id: trustor_id(),
+            asset: TrustLineAsset::PoolShare(PoolId(pool_id)),
+        }))
+    }
+
+    #[test]
+    fn rpc_duplicate_returned_key_is_rejected_without_overwrite() {
+        let mut value = single_pool_rpc_value();
+        let duplicate = value["result"]["entries"][0].clone();
+        value["result"]["entries"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(error.to_string().contains("duplicate returned ledger key"));
+    }
+
+    #[test]
+    fn duplicate_requested_key_is_rejected() {
+        let result = RpcResult {
+            entries: Vec::new(),
+            latest_ledger: 1,
+        };
+        let requested = vec!["same".to_owned(), "same".to_owned()];
+        let error = validate_rpc_entries(&result, &requested).unwrap_err();
+        assert!(error.to_string().contains("duplicate requested ledger key"));
+    }
+
+    #[test]
+    fn rpc_unexpected_returned_key_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        value["result"]["entries"][0]["key"] = serde_json::Value::String("unexpected".to_owned());
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(error.to_string().contains("unexpected returned ledger key"));
+    }
+
+    #[test]
+    fn rpc_missing_required_key_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        value["result"]["entries"].as_array_mut().unwrap().pop();
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(error.to_string().contains("missing required ledger key"));
+    }
+
+    #[test]
+    fn wrong_credit_trustline_owner_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        let key = single_pool_credit_key();
+        rpc_entry_by_key(&mut value, &key)["xdr"] = serde_json::Value::String(make_credit_tl_xdr(
+            other_issuer_id(),
+            issuer_id(),
+            "FLUTTER",
+            Some(1),
+        ));
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(error.to_string().contains("wrong trustor"));
+    }
+
+    #[test]
+    fn wrong_credit_trustline_asset_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        let key = single_pool_credit_key();
+        rpc_entry_by_key(&mut value, &key)["xdr"] = serde_json::Value::String(make_credit_tl_xdr(
+            trustor_id(),
+            other_issuer_id(),
+            "FLUTTER",
+            Some(1),
+        ));
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("credit trustline asset identity")
+        );
+    }
+
+    #[test]
+    fn wrong_pool_share_identity_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        let (_, pool_id, _, _) = get_canonical_pool1();
+        let key = single_pool_share_key(pool_id.clone());
+        let (_, other_pool_id, _, _) = get_canonical_pool2();
+        rpc_entry_by_key(&mut value, &key)["xdr"] =
+            serde_json::Value::String(make_pool_tl_xdr(trustor_id(), &other_pool_id, 100_000_000));
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pool-share trustline asset identity")
+        );
+    }
+
+    #[test]
+    fn wrong_pool_entry_identity_is_rejected() {
+        let mut value = single_pool_rpc_value();
+        let (_, pool_id, asset_a, asset_b) = get_canonical_pool1();
+        let pool_key = key_to_b64(&LedgerKey::LiquidityPool(LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_id.clone()),
+        }));
+        let (_, other_pool_id, _, _) = get_canonical_pool2();
+        rpc_entry_by_key(&mut value, &pool_key)["xdr"] =
+            serde_json::Value::String(make_lp_entry_xdr(&other_pool_id, &asset_a, &asset_b, 30));
+        let error = run_single_pool_rpc(value).unwrap_err();
+        assert!(error.to_string().contains("liquidity pool entry identity"));
+    }
+
+    #[test]
+    fn negative_pool_balance_and_reserve_are_rejected() {
+        let mut negative_balance = single_pool_rpc_value();
+        let (_, pool_id, _, _) = get_canonical_pool1();
+        let key = single_pool_share_key(pool_id.clone());
+        rpc_entry_by_key(&mut negative_balance, &key)["xdr"] =
+            serde_json::Value::String(make_pool_tl_xdr(trustor_id(), &pool_id, -1));
+        let error = run_single_pool_rpc(negative_balance).unwrap_err();
+        assert!(error.to_string().contains("balance cannot be negative"));
+
+        let mut negative_reserve = single_pool_rpc_value();
+        let pool_key = key_to_b64(&LedgerKey::LiquidityPool(LedgerKeyLiquidityPool {
+            liquidity_pool_id: PoolId(pool_id.clone()),
+        }));
+        let (_, _, asset_a, asset_b) = get_canonical_pool1();
+        rpc_entry_by_key(&mut negative_reserve, &pool_key)["xdr"] =
+            serde_json::Value::String(make_lp_entry_xdr_with_values(
+                &pool_id,
+                &asset_a,
+                &asset_b,
+                30,
+                -1,
+                2_000_000_000,
+                500_000_000,
+            ));
+        let error = run_single_pool_rpc(negative_reserve).unwrap_err();
+        assert!(error.to_string().contains("cannot be negative"));
+    }
+
+    #[test]
+    fn discovery_marks_sponsorship_and_reserve_preflight_as_incomplete() {
+        let snapshot = run_single_pool_rpc(single_pool_rpc_value()).expect("bounded discovery");
+        assert_eq!(snapshot.base_reserve_stroops, None);
+        assert!(!snapshot.sponsorship_evidence_complete);
+    }
+
+    #[test]
+    fn rpc_batch_over_limit_fails_before_transport() {
+        let balances: Vec<_> = (0..99)
+            .map(|index| {
+                serde_json::json!({
+                    "asset_type": "liquidity_pool_shares",
+                    "liquidity_pool_id": format!("{:064x}", index + 1)
+                })
+            })
+            .collect();
+        let horizon_json =
+            serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": balances }).to_string();
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(horizon_json),
+        );
+        let pipeline = DiscoveryPipeline::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            "Test SDF Network ; September 2015",
+        );
+        let error = pipeline
+            .discover_and_verify(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert_eq!(
+            error,
+            DiscoveryError::RpcBatchTooLarge {
+                requested: 201,
+                maximum: MAX_RPC_GET_LEDGER_ENTRIES_KEYS
+            }
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1130,9 +1568,14 @@ mod tests {
         };
 
         let report = evaluate(&op, &snapshot);
-        assert_eq!(report.classification, Classification::UnverifiedForecast);
-        assert_eq!(report.pool_redemptions.len(), 1);
-        assert!(report.errors.is_empty());
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(report.pool_redemptions.is_empty());
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("base reserve is unavailable"))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1233,8 +1676,8 @@ mod tests {
         };
 
         let report = evaluate(&op, &snapshot);
-        assert_eq!(report.classification, Classification::UnverifiedForecast);
-        assert_eq!(report.pool_redemptions.len(), 2);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(report.pool_redemptions.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1312,7 +1755,7 @@ mod tests {
         };
 
         let report = evaluate(&op, &snapshot);
-        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.classification, Classification::Inconclusive);
         assert_eq!(report.transition, Transition::ForcedPoolRedemption);
         assert!(report.pool_redemptions.is_empty());
     }
@@ -1956,7 +2399,7 @@ mod tests {
         let err = pipeline
             .discover_and_verify(TRUSTOR_STRKEY, &credit_asset_flutter())
             .unwrap_err();
-        assert!(matches!(err, DiscoveryError::StaleIndexerData(_)));
+        assert!(err.to_string().contains("missing required ledger key"));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
     }
 

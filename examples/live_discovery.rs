@@ -1,4 +1,4 @@
-//! RevokeTrace Phase 1C: Trusted Discovery Prototype Demonstration
+//! RevokeTrace Phase 1C: Research-Only Discovery Prototype Demonstration
 //!
 //! Demonstrates:
 //! 1. Autonomous Candidate Enumeration:
@@ -28,7 +28,7 @@ use revoketrace_spike::{
 
 fn main() {
     println!("============================================================");
-    println!("     RevokeTrace Phase 1C: Trusted Discovery Prototype      ");
+    println!("     RevokeTrace Phase 1C: Research-Only Discovery Prototype ");
     println!("============================================================\n");
 
     let network_passphrase = "Test SDF Network ; September 2015";
