@@ -135,15 +135,23 @@ fn index_response_entries(
     let mut indexed = BTreeMap::new();
     for entry in entries {
         if !requested.contains_key(&entry.key) {
-            return Err(format!("unexpected ledger key in RPC response: {}", entry.key));
+            return Err(format!(
+                "unexpected ledger key in RPC response: {}",
+                entry.key
+            ));
         }
         if indexed.insert(entry.key.clone(), entry.clone()).is_some() {
-            return Err(format!("duplicate ledger key in RPC response: {}", entry.key));
+            return Err(format!(
+                "duplicate ledger key in RPC response: {}",
+                entry.key
+            ));
         }
     }
     for key in requested_keys {
         if !indexed.contains_key(key) {
-            return Err(format!("missing requested ledger key from RPC response: {key}"));
+            return Err(format!(
+                "missing requested ledger key from RPC response: {key}"
+            ));
         }
     }
     Ok(indexed)
@@ -154,7 +162,10 @@ fn verify_entry_identity(entry: &RpcEntry, expected: &ExpectedEntryIdentity) -> 
         .map_err(|error| format!("malformed ledger-entry XDR for {}: {error}", entry.key))?;
     match (expected, data) {
         (ExpectedEntryIdentity::Account(expected_id), LedgerEntryData::Account(account))
-            if account.account_id == *expected_id => Ok(()),
+            if account.account_id == *expected_id =>
+        {
+            Ok(())
+        }
         (
             ExpectedEntryIdentity::CreditTrustline {
                 account_id: expected_account,
@@ -177,17 +188,12 @@ fn verify_entry_identity(entry: &RpcEntry, expected: &ExpectedEntryIdentity) -> 
         }
         (_, actual) => Err(format!(
             "ledger-entry identity/type contradiction for {}: expected {:?}, got {:?}",
-            entry.key,
-            expected,
-            actual
+            entry.key, expected, actual
         )),
     }
 }
 
-fn verify_live_entries(
-    rpc: &RpcResult,
-    expected_entries: &[ExpectedEntry],
-) -> Result<(), String> {
+fn verify_live_entries(rpc: &RpcResult, expected_entries: &[ExpectedEntry]) -> Result<(), String> {
     let requested_keys: Vec<_> = expected_entries
         .iter()
         .map(|expected| expected.key.clone())
@@ -211,7 +217,12 @@ fn verify_live_observation(
     let indexed = index_response_entries(requested_keys, &rpc.entries)?;
     let credit_key = expected_entries
         .iter()
-        .find(|expected| matches!(expected.identity, ExpectedEntryIdentity::CreditTrustline { .. }))
+        .find(|expected| {
+            matches!(
+                expected.identity,
+                ExpectedEntryIdentity::CreditTrustline { .. }
+            )
+        })
         .ok_or_else(|| "credit trustline expectation is missing".to_owned())?;
     let credit_tl_entry = indexed
         .get(&credit_key.key)
@@ -611,7 +622,11 @@ mod tests {
 
     #[test]
     fn reordered_entries_are_indexed_by_exact_key() {
-        let requested = vec!["account".to_owned(), "trustline".to_owned(), "pool".to_owned()];
+        let requested = vec![
+            "account".to_owned(),
+            "trustline".to_owned(),
+            "pool".to_owned(),
+        ];
         let entries = vec![
             response_entry("pool"),
             response_entry("account"),
