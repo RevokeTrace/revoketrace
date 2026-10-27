@@ -13,6 +13,12 @@ use stellar_xdr::{
     ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
 };
 
+pub mod discovery;
+pub use discovery::{
+    CurlTransport, DiscoveryError, DiscoveryPipeline, HorizonAccountResponse, HorizonBalance,
+    HttpTransport, MockTransport, decode_account_id, encode_account_id,
+};
+
 pub const AUTHORIZED_FLAG: u32 = 1;
 pub const AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG: u32 = 2;
 
@@ -189,7 +195,13 @@ pub struct SponsorshipHandoff {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DiscoverySource {
     SyntheticFixture,
-    LedgerCapture { endpoint: String },
+    LedgerCapture {
+        endpoint: String,
+    },
+    TwoTierDiscovery {
+        horizon_endpoint: String,
+        rpc_endpoint: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -347,6 +359,18 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         && endpoint.trim().is_empty()
     {
         errors.push("ledger capture endpoint is empty".to_owned());
+    }
+    if let DiscoverySource::TwoTierDiscovery {
+        horizon_endpoint,
+        rpc_endpoint,
+    } = &snapshot.discovery.source
+    {
+        if horizon_endpoint.trim().is_empty() {
+            errors.push("discovery horizon endpoint is empty".to_owned());
+        }
+        if rpc_endpoint.trim().is_empty() {
+            errors.push("discovery rpc endpoint is empty".to_owned());
+        }
     }
     if snapshot.base_reserve_stroops == 0 {
         errors.push("base reserve must be positive".to_owned());
