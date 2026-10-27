@@ -36,6 +36,19 @@ adapter and trust model:
 - When full historical state, complete sponsor account graphs, or base-reserve configurations are
   unverified, evidence remains bounded or incomplete. `SUPPORTED_SAFE` remains strictly unreachable.
 
+Phase 4B implements exact reserve, sponsorship, and operation-context accounting:
+- **Minimum-Balance Rules**: Uses checked integer arithmetic for `units = 2 + subentries + num_sponsoring - num_sponsored`,
+  incorporating selling and buying liabilities.
+- **Sponsorship Transitions**: Models unsponsored and sponsored pool-share trustline removal,
+  freed reserve reuse for non-sandwich sponsors, and strict solvency/capacity checks for active sponsorship sandwiches.
+- **Operation-Context Reconstruction**: Distinguishes transaction source from operation source,
+  models transaction sequence and operation index for CAP-0038 claimable-balance ID derivation,
+  and outputs uncomputed ID indicators when transaction context is incomplete.
+- **Deterministic Ordering**: Canonical lexicographical sorting of affected pool-share trustlines
+  mirrors Stellar Core's `std::sort(poolTLKeys)` to ensure deterministic reserve consumption.
+- **Safety Boundary**: When required data is unavailable, results classify as `INCONCLUSIVE`.
+  `SUPPORTED_SAFE` remains strictly unreachable.
+
 ## Phase 1 status
 
 The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.
