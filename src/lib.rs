@@ -1845,6 +1845,82 @@ mod tests {
         );
     }
 
+    // Phase 4C independent verification fixture.
+    //
+    // Real SetTrustLineFlags operation observed on the Stellar Testnet
+    // (network passphrase "Test SDF Network ; September 2015"), not a
+    // synthetic construction. Retrieved 2026-10-27 from Horizon testnet
+    // (https://horizon-testnet.stellar.org). ledger: 5417676; transaction
+    // hash: 8856ad8fc4f91d5ad3021e7bbc35f9aedc3977286fa1a07d936e6de49e402d84;
+    // operation index: 0, type: set_trust_line_flags; source account:
+    // GDEYL6GBXNOB2RRRWOKBFX6EY3K5SFCKTWH43DX5KCNJGHLZSAOK7DAL; trustor:
+    // GCTWO2J7M4T7KKQ3UTJ4DFL7AH6ACX45FKW2NPVLMH5CD6L3IWRNVB2B; asset: SKY
+    // (credit_alphanum4); clear_flags: [clawback_enabled]; Horizon-reported
+    // result: successful.
+    //
+    // envelope_xdr/result_xdr below are copied verbatim from Horizon's JSON
+    // response for this transaction; no pre-operation ledger state (prior
+    // trustline flags) was independently captured for this fixture, so this
+    // test only verifies (a) the real result XDR decodes to
+    // SetTrustLineFlagsResultCode::Success and that RevokeTrace's own
+    // result-code mapping agrees, and (b) that a clawback-only flag change
+    // (as evidenced by the real set_flags/clear_flags encoded in the
+    // envelope) is not classified as a forced pool-share redemption
+    // transition by classify_transition, matching stellar-core's
+    // TrustFlagsOpFrameBase::doApply (shouldRemoveOffers is derived only
+    // from the AUTHORIZED / AUTHORIZED_TO_MAINTAIN_LIABILITIES bits).
+    #[test]
+    fn independent_testnet_fixture_clawback_only_change_is_not_forced_redemption() {
+        const RESULT_XDR: &str = "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAAVAAAAAAAAAAA=";
+        const ENVELOPE_XDR: &str = "AAAAAgAAAADJhfjBu1wdRjGzlBLfxMbV2RRKnY/Njv1QmpMdeZAcrwAAAGQAUqrDAAAABQAAAAAAAAAAAAAAAQAAAAAAAAAVAAAAAKdnaT9nJ/UqG6TTwZV/AfwBX50qraa+q2H6Ifl7RaLaAAAAAVNLWQAAAAAAyYX4wbtcHUYxs5QS38TG1dkUSp2PzY79UJqTHXmQHK8AAAAEAAAAAAAAAAAAAAABeZAcrwAAAECvtAwIi7xvC2eHwLps6DCjTARBiRYCpIGcg0+x6/tOHitUnwcI7teqxNZGH4dgz07sQfTs6wO11mF4mERu+JoD";
+
+        let result = stellar_xdr::TransactionResult::from_xdr_base64(RESULT_XDR, Limits::none())
+            .expect("real testnet result XDR must decode");
+        let op_results = match result.result {
+            stellar_xdr::TransactionResultResult::TxSuccess(ops) => ops,
+            other => panic!("expected TxSuccess, got {:?}", other),
+        };
+        let set_flags_result = match &op_results[0] {
+            stellar_xdr::OperationResult::OpInner(
+                stellar_xdr::OperationResultTr::SetTrustLineFlags(r),
+            ) => r,
+            other => panic!("expected SetTrustLineFlags op result, got {:?}", other),
+        };
+        assert_eq!(
+            map_set_trust_line_flags_result(set_flags_result.discriminant()),
+            Classification::UnverifiedForecast,
+            "RevokeTrace's mapping must agree with the real, independently observed Success result"
+        );
+
+        let envelope =
+            stellar_xdr::TransactionEnvelope::from_xdr_base64(ENVELOPE_XDR, Limits::none())
+                .expect("real testnet envelope XDR must decode");
+        let tx = match envelope {
+            stellar_xdr::TransactionEnvelope::Tx(e) => e.tx,
+            other => panic!("expected a V1 transaction envelope, got {:?}", other),
+        };
+        let op = &tx.operations[0];
+        let set_trust_op = match &op.body {
+            stellar_xdr::OperationBody::SetTrustLineFlags(op) => op,
+            other => panic!("expected SetTrustLineFlags operation body, got {:?}", other),
+        };
+        assert_eq!(set_trust_op.set_flags, 0);
+        assert_eq!(set_trust_op.clear_flags, TRUSTLINE_CLAWBACK_ENABLED_FLAG);
+
+        // A real trustline that had AUTHORIZED_FLAG set before this operation
+        // keeps AUTHORIZED_FLAG set after it; only the clawback bit (which
+        // `maintains_liabilities` does not consider) changes, so this must
+        // not be classified as a forced pool-share redemption.
+        let before_flags = AUTHORIZED_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        let after_flags =
+            (before_flags & !set_trust_op.clear_flags) | (set_trust_op.set_flags as u32);
+        assert_ne!(
+            classify_transition(before_flags, after_flags),
+            Transition::ForcedPoolRedemption,
+            "clearing only the clawback flag must never trigger forced pool-share redemption"
+        );
+    }
+
     #[test]
     fn derives_cap0038_pool_revoke_id_from_xdr_preimage() {
         let source = AccountId::from(PublicKey::PublicKeyTypeEd25519(Uint256([7; 32])));
