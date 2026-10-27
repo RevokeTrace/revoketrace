@@ -84,11 +84,12 @@ We investigated four potential sources against current Stellar documentation and
 In accordance with project constraints (CLI-first, read-only, zero paid services, no permanent daemon/database):
 
 1. **For Live Network Execution (Bounded Current-Tip Verification):**
-   - Acquire network state through Stellar RPC by combining:
-     - `getLatestLedger` to extract `base_reserve` and `protocolVersion` from `headerXdr`.
-     - `getLedgerEntries` parsing both `xdr` (`LedgerEntryData`) and `extXdr` (`LedgerEntryExt`) to extract actual entry-level sponsorship descriptors.
+   - Acquire network state through Stellar RPC with strict sequence binding:
+     - Query `getLatestLedger` to extract `base_reserve` and `protocolVersion` from `headerXdr`, validating 64-character hex ledger hash format.
+     - Query `getLedgerEntries` parsing both `xdr` (`LedgerEntryData`) and `extXdr` (`LedgerEntryExt`) to extract actual entry-level sponsorship descriptors.
+     - **Strict Sequence Binding & Bounded Retry:** Assert `header.ledger_seq == rpc.latest_ledger`. If the tip advances between requests, the entire capture is atomically retried (up to 3 bounded attempts). If synchronization fails, it fails closed as `InconsistentLedgerSequence`. A header from ledger $L$ is NEVER combined with entries from ledger $L+1$.
      - Candidate enumeration via Horizon, validated against on-chain `liquidityPoolUseCount`.
-   - **Classification:** `BoundedCurrentTipRpc` (not `CompleteAuthoritativeLedger`).
+   - **Classification:** `BoundedCurrentTipRpc` (bounded candidate set at the tip, not complete export).
    - Forecast safety classification remains strictly `UnverifiedForecast`. `SupportedSafe` remains unreachable.
 
 2. **For Offline Reproducible Verification (Authoritative Ledger Capture):**
@@ -97,10 +98,11 @@ In accordance with project constraints (CLI-first, read-only, zero paid services
      - Authoritative `base_reserve` in stroops.
      - Complete entry state: trustor account, issuer account, credit trustline, all affected pool-share trustlines, liquidity pool entries, and all sponsor accounts.
      - Exact `extXdr` sponsorship descriptors and counter reconciliations.
-   - **Classification:** Derived through rigorous property verification:
-     - If all 9 criteria are cryptographically and structurally satisfied $\to$ `CompleteAuthoritativeLedger`.
-     - If any required input or sponsorship link is missing $\to$ `LedgerConsistentIncomplete`.
-     - If contradictory or sequence-mismatched $\to$ `InvalidOrContradictory`.
+   - **Classification & Authority Promotion Boundaries:**
+     - Caller-supplied booleans, enums, manifest digests, export IDs, or JSON fields must **never** establish authoritative completeness.
+     - Until an independent authoritative export verifier (e.g. offline Captive Core / History Archive verifier) is integrated, `CompleteAuthoritativeLedger` is **unreachable** for caller-supplied snapshots.
+     - Caller snapshots attempting to claim `CompleteAuthoritativeLedger` fail closed as `ForgedProvenance`.
+     - Synthetically constructed or caller-supplied exports labeled `AuthoritativeExport` safely evaluate to `LedgerConsistentIncomplete`.
 
 ---
 
@@ -118,9 +120,11 @@ flowchart TD
     Check3 -- No --> Inc[LedgerConsistentIncomplete]
     Check3 -- Yes --> Check4{Candidate Source?}
     Check4 -- Horizon / Untrusted Candidate --> Bounded[BoundedCurrentTipRpc]
-    Check4 -- Authoritative Bucket / Core Export --> Check5{Complete Sponsor Graph?}
+    Check4 -- Authoritative Bucket / Core Export --> CheckVerifier{Independent Capture Verifier?}
+    CheckVerifier -- Unverified Caller Snapshot --> Inc
+    CheckVerifier -- Verified Offline Capture --> Check5{Complete Sponsor Graph?}
     Check5 -- Missing Sponsor Accounts --> Inc
-    Check5 -- Complete & Reconciled --> Auth[CompleteAuthoritativeLedger]
+    Check5 -- Complete & Reconciled --> Auth[CompleteAuthoritativeLedger (Reserved)]
 ```
 
 ### Classification Definitions:
@@ -128,11 +132,11 @@ flowchart TD
 1. **`UntrustedCandidate`:**
    - Raw candidate pool IDs or unverified manifest keys without on-chain RPC verification.
 2. **`BoundedCurrentTipRpc`:**
-   - Bounded single-batch RPC verification against `getLedgerEntries` and `getLatestLedger` at the current tip. `liquidityPoolUseCount` reconciles with discovered pools, `base_reserve` and `sponsoring_id` are parsed, but the candidate source is bounded or untrusted (Horizon), and historical state is unproven.
+   - Bounded single-batch RPC verification against `getLedgerEntries` and `getLatestLedger` at the current tip. `liquidityPoolUseCount` reconciles with discovered pools, `base_reserve` and `sponsoring_id` are parsed, but the candidate source is bounded (Horizon), and general historical enumeration completeness is unproven.
 3. **`LedgerConsistentIncomplete`:**
-   - Entries belong to the same ledger sequence, but the evidence lacks required preflight inputs (e.g. missing `base_reserve`, missing third-party sponsor accounts, missing issuer account, or incomplete coverage).
+   - Entries belong to the same ledger sequence, but the evidence lacks required preflight inputs (e.g. missing `base_reserve`, missing third-party sponsor accounts, missing issuer account, or caller-supplied export without an independent verifier).
 4. **`CompleteAuthoritativeLedger`:**
-   - Sourced from an authoritative ledger export or verified complete state; all affected pool shares, credit trustlines, constant-product pool derivations, sponsor accounts, and header base-reserve values are verified.
+   - Reserved strictly for an independently verified complete ledger export (e.g. Captive Core / History Archive verifier). This classification is **unreachable** for caller-supplied snapshots; caller attempts to claim it fail closed as `ForgedProvenance`.
 5. **`InvalidOrContradictory`:**
    - Mismatched ledger sequences, corrupted XDR, conflicting flags, negative balances/reserves, pool ID derivation mismatch, missing deletion records, or tampered manifest hashes.
 

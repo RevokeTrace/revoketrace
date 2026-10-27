@@ -23,13 +23,18 @@ The Phase 1C discovery prototype validated a bounded single-batch RPC response a
 requested keys and decoded XDR identities. Phase 4A establishes the authoritative ledger evidence
 adapter and trust model:
 - Evidence classifications are strictly derived from verified properties: `UntrustedCandidate`,
-  `BoundedCurrentTipRpc`, `LedgerConsistentIncomplete`, `CompleteAuthoritativeLedger`, and `InvalidOrContradictory`.
+  `BoundedCurrentTipRpc`, `LedgerConsistentIncomplete`, `CompleteAuthoritativeLedger` (reserved), and `InvalidOrContradictory`.
 - Public RPC queries fetch `getLatestLedger` to extract authoritative `base_reserve` and `protocolVersion`
   from `headerXdr`, and parse `extXdr` on `getLedgerEntries` to extract ledger entry `sponsoring_id`.
-- Caller-supplied labels cannot promote evidence to authoritative status.
+- Strict sequence binding binds `header.ledger_seq == rpc.latest_ledger` with a bounded atomic retry loop,
+  rejecting torn-state captures across ledger transitions.
+- Caller-supplied booleans, enums, manifest digests, or labels can never promote evidence to authoritative completeness.
+  `CompleteAuthoritativeLedger` is unreachable for caller-supplied snapshots until an independent capture verifier exists.
+- The live demonstration verifies a bounded candidate set at the current network tip (`BoundedCurrentTipRpc`),
+  not an independently complete ledger export.
 - Treating a ledger-close delta (`LedgerCloseMeta`) as a complete state snapshot is rejected.
 - When full historical state, complete sponsor account graphs, or base-reserve configurations are
-  unverified, evidence remains bounded or incomplete. `SUPPORTED_SAFE` remains unreachable.
+  unverified, evidence remains bounded or incomplete. `SUPPORTED_SAFE` remains strictly unreachable.
 
 ## Phase 1 status
 
