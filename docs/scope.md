@@ -22,3 +22,5 @@ The engine must fail closed. `SUPPORTED_SAFE` is a forecast against a complete, 
 ## Phase 1 status
 
 The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.
+
+The spike has no signing, transaction construction, network submission, capture adapter, or live-ledger mutation path. Its `SUPPORTED_SAFE` label means only that the supplied synthetic snapshot passed the currently modeled checks; it is not a network-success prediction or operational safety guarantee.
