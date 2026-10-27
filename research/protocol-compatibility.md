@@ -1,0 +1,77 @@
+# Protocol compatibility
+
+Research date: 2026-10-27. This is a Phase 1 source review, not a statement of production support.
+
+## Decision-critical behavior
+
+CAP-0038's executable-style rule is:
+
+```text
+tl = asset trustline owned by the affected account
+if authorized_to_maintain_liabilities(tl.flags)
+   && !authorized_to_maintain_liabilities(expected_flags):
+    discover every pool-share trustline owned by the same account that uses
+    the revoked asset
+    for each pool-share trustline, redeem using the LiquidityPoolWithdrawOp
+    arithmetic, then delete the pool-share trustline
+    create one unconditional claimable balance per nonzero withdrawn asset
+    unless the owner is that asset's issuer
+    sponsor each claimable balance according to the CAP-0038 sponsorship rule
+    fail the whole operation if reserve or sponsorship limits fail
+```
+
+The trigger is the transition out of `AUTHORIZED_TO_MAINTAIN_LIABILITIES`, not merely clearing `AUTHORIZED_FLAG`. Therefore:
+
+| Before | Requested after | Forced pool redemption? | Reason |
+| --- | --- | --- | --- |
+| fully authorized | maintain-liabilities-only | no | maintain-liabilities permission remains |
+| maintain-liabilities-only | unauthorized / cleared | yes | permission is removed |
+| fully authorized | unauthorized / cleared | yes | transition removes maintain-liabilities permission |
+| fully authorized | maintain-liabilities-only | no | the position remains withdrawable |
+
+`AllowTrustOp` and `SetTrustLineFlagsOp` share this revocation extension. CAP-0038 says their existing validity conditions remain unchanged. The operation can fail with the protocol's low-reserve result (`ALLOW_TRUST_LOW_RESERVE` or `SET_TRUST_LINE_FLAGS_LOW_RESERVE`) or with `opTOO_MANY_SPONSORING` when the selected sponsor cannot create the required claimable balances.
+
+## Redemption arithmetic
+
+For a constant-product pool and a pool-share balance `amount`, the withdrawal amount for each constituent is the integer floor of:
+
+```text
+withdrawn = floor(amount * reserve / total_pool_shares)
+```
+
+The implementation must use checked integer multiplication/division. Stellar Classic amounts are signed 64-bit stroops; a `u128` intermediate is sufficient for two nonnegative `int64` inputs, but invalid negative values must be rejected before conversion. The result can be zero for either asset, so zero/one/two claimable outputs are all protocol-valid.
+
+Worked example: reserves A/B = 5,000/8,000 stroops, total shares = 1,000, holder shares = 125. Redemption yields A = `floor(125*5000/1000) = 625` and B = `floor(125*8000/1000) = 1000`. If the holder is not issuer of either asset, two claimable balances are created. If it is issuer of A, only B produces a claimable balance. If both withdrawn amounts are zero, no claimable balance is created.
+
+The pool-share trustline counts as two base reserves. The corresponding `LiquidityPoolEntry` has no reserve of its own and can be deleted when the last pool-share trustline disappears. Deleting the pool-share trustline frees the reserve capacity used to create the claimable balances.
+
+## Claimable-balance IDs and sponsorship
+
+CAP-0038 derives each ID as `sha256(HashIDPreimage::ENVELOPE_TYPE_POOL_REVOKE_OP_ID { sourceAccount, seqNum, opNum, liquidityPoolID, asset })`. The operation source, sequence number, operation index, pool ID, and output asset are therefore required inputs for exact IDs; a fixture that omits them can predict amounts but must not claim exact generated IDs.
+
+The initial sponsor is the pool-share trustline sponsor, or the trustor if the trustline is unsponsored. CAP-0038 then follows an active sponsorship sandwich to its sponsor. This is why account reserve counters, entry sponsorship, and in-transaction sponsorship context are part of the minimum complete snapshot. The selected sponsor needs both available native balance and counter capacity; the relevant limit is `numSponsoring + numSubentries + claimable_balances_to_sponsor <= UINT32_MAX`.
+
+## Protocol/version boundaries
+
+CAP-0038 is the source of truth for Classic AMM behavior. CAP-0046-06 is excluded from the engine's operation domain: its `set_authorized` method exposes SAC contract semantics and deliberately uses maintain-liabilities-only when deauthorizing an account balance to avoid pulling offers and pool shares. That is evidence for the distinction, not an implementation target.
+
+CAP-0035 supplies the Classic revocability/clawback flags and the trustline clawback interaction. It does not replace CAP-0038's pool-redemption rule.
+
+The current `rs-stellar-xdr` release page lists 28.0.1 as latest (released 2026-09-29, commit `ced6bd3`, including a VecM deserialization security fix). The spike pins that version but does not yet claim all current network protocol versions are supported. A production engine must bind the decoded XDR branch and ledger protocol version to an explicit compatibility table.
+
+## Open questions before Phase 2
+
+1. Confirm the exact current `stellar-core` source path and core tests for the pool-revoke implementation and reserve failure cases, then pin commit hashes.
+2. Confirm the exact `stellar-xdr` Rust module/features and generated enum names for all supported protocol branches.
+3. Define a complete discovery adapter: `getLedgerEntries` accepts at most 200 explicit ledger keys and does not enumerate all pool-share trustlines referencing an asset/account. A trusted indexer or full ledger-entry capture is required for discovery, followed by direct RPC reads and same-ledger checks.
+4. Decide whether the first exact-ID fixture includes a real transaction envelope or models the preimage fields directly.
+5. Validate actual network operation-result names and protocol version gating in a testnet capture; do not infer them from prose alone.
+
+## Sources
+
+- CAP-0038: https://github.com/stellar/stellar-protocol/blob/master/core/cap-0038.md (accessed 2026-10-27), especially the SetTrustLineFlags/AllowTrust pseudocode, withdrawal arithmetic, result codes, sponsorship rationale, and reserve discussion.
+- CAP-0035: https://github.com/stellar/stellar-protocol/blob/master/core/cap-0035.md (accessed 2026-10-27).
+- CAP-0046-06: https://github.com/stellar/stellar-protocol/blob/master/core/cap-0046-06.md (accessed 2026-10-27), `set_authorized` semantics.
+- CAP index: https://github.com/stellar/stellar-protocol/blob/master/core/README.md (accessed 2026-10-27).
+- RPC `getLedgerEntries`: https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries (accessed 2026-10-27).
+- Rust XDR releases: https://github.com/stellar/rs-stellar-xdr/releases (accessed 2026-10-27).
