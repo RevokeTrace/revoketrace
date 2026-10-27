@@ -97,20 +97,20 @@ pub fn decode_account_id(strkey: &str) -> Result<[u8; 32], String> {
     Ok(out)
 }
 
-fn account_id_to_bytes(acc: &AccountId) -> [u8; 32] {
+pub(crate) fn account_id_to_bytes(acc: &AccountId) -> [u8; 32] {
     match &acc.0 {
         PublicKey::PublicKeyTypeEd25519(u) => u.0,
     }
 }
 
-fn decode_pool_id(pool_id: &str) -> Result<PoolId, DiscoveryError> {
+pub(crate) fn decode_pool_id(pool_id: &str) -> Result<PoolId, DiscoveryError> {
     let mut bytes = [0u8; 32];
     hex::decode_to_slice(pool_id, &mut bytes)
         .map_err(|e| DiscoveryError::ParseError(format!("invalid pool ID: {}", e)))?;
     Ok(PoolId(Hash(bytes)))
 }
 
-fn asset_to_parts(asset: &Asset) -> (String, String) {
+pub(crate) fn asset_to_parts(asset: &Asset) -> (String, String) {
     match asset {
         Asset::Native => ("XLM".to_owned(), "native".to_owned()),
         Asset::CreditAlphanum4(a) => {
@@ -165,6 +165,23 @@ pub enum DiscoveryError {
         requested: usize,
         maximum: usize,
     },
+    UnsupportedProtocolVersion {
+        version: u32,
+        minimum: u32,
+    },
+    MissingReserveConfiguration(String),
+    IncorrectNetworkPassphrase {
+        expected: String,
+        found: String,
+    },
+    IncorrectSponsorshipIdentity {
+        expected: String,
+        found: String,
+    },
+    MissingDeletionRecord(String),
+    DeltaTreatedAsFullSnapshot(String),
+    TruncatedArchiveOrCapture(String),
+    ForgedProvenance(String),
 }
 
 impl std::fmt::Display for DiscoveryError {
@@ -214,6 +231,32 @@ impl std::fmt::Display for DiscoveryError {
                 "RPC batch contains {} keys, exceeding the single-request maximum of {}",
                 requested, maximum
             ),
+            Self::UnsupportedProtocolVersion { version, minimum } => write!(
+                f,
+                "unsupported protocol version: {} < minimum required {}",
+                version, minimum
+            ),
+            Self::MissingReserveConfiguration(s) => {
+                write!(f, "missing reserve configuration: {}", s)
+            }
+            Self::IncorrectNetworkPassphrase { expected, found } => write!(
+                f,
+                "incorrect network passphrase: expected {}, found {}",
+                expected, found
+            ),
+            Self::IncorrectSponsorshipIdentity { expected, found } => write!(
+                f,
+                "incorrect sponsorship identity: expected {}, found {}",
+                expected, found
+            ),
+            Self::MissingDeletionRecord(s) => write!(f, "missing deletion record: {}", s),
+            Self::DeltaTreatedAsFullSnapshot(s) => {
+                write!(f, "delta treated as full snapshot: {}", s)
+            }
+            Self::TruncatedArchiveOrCapture(s) => {
+                write!(f, "truncated archive or capture: {}", s)
+            }
+            Self::ForgedProvenance(s) => write!(f, "forged provenance: {}", s),
         }
     }
 }
@@ -372,6 +415,8 @@ pub struct RpcEntry {
     pub xdr: String,
     #[serde(rename = "lastModifiedLedgerSeq")]
     pub last_modified_ledger_seq: u32,
+    #[serde(default, rename = "extXdr")]
+    pub ext_xdr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,7 +434,7 @@ pub struct RpcResponse {
 
 pub const MAX_RPC_GET_LEDGER_ENTRIES_KEYS: usize = 200;
 
-fn validate_rpc_entries<'a>(
+pub(crate) fn validate_rpc_entries<'a>(
     result: &'a RpcResult,
     requested_keys: &[String],
 ) -> Result<std::collections::BTreeMap<String, &'a RpcEntry>, DiscoveryError> {
@@ -1000,11 +1045,13 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
                     liquidity_pool_use_count: use_count,
                     verified_pool_count: discovered_count,
                 },
+                evidence_classification: None,
             },
             // The public RPC response does not establish the network's base-reserve
             // configuration or ledger-entry sponsorship identities. Keep this result
             // as discovery evidence only; do not promote it to a complete preflight.
             base_reserve_stroops: None,
+            protocol_version: None,
             sponsorship_evidence_complete: false,
             accounts: vec![trustor_state, issuer_state],
             trustlines: vec![credit_tl_state],
@@ -1017,9 +1064,12 @@ impl<T: HttpTransport> DiscoveryPipeline<T> {
 }
 
 impl DiscoveryError {
-    /// Maps any discovery refusal into the engine's conservative outcome (`Inconclusive`).
+    /// Maps any discovery refusal into the engine's conservative outcome.
     pub fn into_classification(&self) -> crate::Classification {
-        crate::Classification::Inconclusive
+        match self {
+            Self::UnsupportedProtocolVersion { .. } => crate::Classification::Unsupported,
+            _ => crate::Classification::Inconclusive,
+        }
     }
 }
 
