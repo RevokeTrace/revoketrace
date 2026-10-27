@@ -8,8 +8,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stellar_xdr::{
-    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits, OperationResultCode,
-    PoolId, ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
+    AllowTrustResultCode, Asset, Hash, HashIdPreimageRevokeId, Limits, OperationResultCode, PoolId,
+    ReadXdr, SequenceNumber, SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, WriteXdr,
 };
 
 pub const AUTHORIZED_FLAG: u32 = 1;
@@ -262,10 +262,10 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         if account(snapshot, &pool.owner).is_none() {
             errors.push(format!("pool owner {} is missing", pool.owner));
         }
-        if let Some(sponsor) = &pool.sponsor {
-            if account(snapshot, sponsor).is_none() {
-                errors.push(format!("pool sponsor {} is missing", sponsor));
-            }
+        if let Some(sponsor) = &pool.sponsor
+            && account(snapshot, sponsor).is_none()
+        {
+            errors.push(format!("pool sponsor {} is missing", sponsor));
         }
         if pool.owner_pool_shares > pool.total_pool_shares {
             errors.push(format!(
@@ -394,7 +394,7 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         } else {
             owner_delta.num_sponsoring += claimable_balances.len() as i64;
         }
-        if sponsor != base_sponsor {
+        if sponsor != base_sponsor || pool.sponsor.is_some() {
             let replacement_delta = deltas.entry(sponsor.clone()).or_insert(AccountDelta {
                 id: sponsor.clone(),
                 balance_stroops: 0,
@@ -403,15 +403,6 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
                 num_sponsored: 0,
             });
             replacement_delta.num_sponsoring += claimable_balances.len() as i64;
-        } else if pool.sponsor.is_some() {
-            let sponsor_delta = deltas.entry(sponsor.clone()).or_insert(AccountDelta {
-                id: sponsor.clone(),
-                balance_stroops: 0,
-                subentries: 0,
-                num_sponsoring: 0,
-                num_sponsored: 0,
-            });
-            sponsor_delta.num_sponsoring += claimable_balances.len() as i64;
         }
         redemptions.push(PoolRedemptionForecast {
             pool_id: pool.pool_id.clone(),
@@ -521,9 +512,7 @@ pub fn decode_flags(bytes: &[u8]) -> Result<u32, stellar_xdr::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stellar_xdr::{
-        AccountId, AlphaNum4, Asset, AssetCode4, PublicKey, Uint256, WriteXdr,
-    };
+    use stellar_xdr::{AccountId, AlphaNum4, Asset, AssetCode4, PublicKey, Uint256, WriteXdr};
 
     fn snapshot(sponsor: Option<&str>, discovery_complete: bool) -> Snapshot {
         Snapshot {
@@ -669,10 +658,12 @@ mod tests {
         let sponsored = snapshot(Some("sponsor"), true);
         let report = evaluate(&revoke(), &sponsored);
         assert_eq!(report.classification, Classification::SupportedSafe);
-        assert!(report.pool_redemptions[0]
-            .claimable_balances
-            .iter()
-            .all(|balance| balance.sponsor == "sponsor"));
+        assert!(
+            report.pool_redemptions[0]
+                .claimable_balances
+                .iter()
+                .all(|balance| balance.sponsor == "sponsor")
+        );
 
         let mut sandwich = sponsored;
         sandwich.accounts[3].balance_stroops = 100_000_000;
@@ -682,10 +673,12 @@ mod tests {
         });
         let report = evaluate(&revoke(), &sandwich);
         assert_eq!(report.classification, Classification::SupportedSafe);
-        assert!(report.pool_redemptions[0]
-            .claimable_balances
-            .iter()
-            .all(|balance| balance.sponsor == "replacement"));
+        assert!(
+            report.pool_redemptions[0]
+                .claimable_balances
+                .iter()
+                .all(|balance| balance.sponsor == "replacement")
+        );
     }
 
     #[test]
