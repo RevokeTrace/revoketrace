@@ -55,6 +55,8 @@ The initial sponsor is the pool-share trustline sponsor, or the trustor if the t
 
 CAP-0038 is the source of truth for Classic AMM behavior. CAP-0046-06 is excluded from the engine's operation domain: its `set_authorized` method exposes SAC contract semantics and deliberately uses maintain-liabilities-only when deauthorizing an account balance to avoid pulling offers and pool shares. That is evidence for the distinction, not an implementation target.
 
+The current `stellar-core` source inspection confirms the boundary in executable code. At commit `05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4`, `TrustFlagsOpFrameBase::doApply` computes the expected flags, then calls `removeOffers` only when the old trustline is maintain-liabilities-authorized and the expected value is not. `removeOffersAndPoolShareTrustLines` is gated at protocol version 18, sorts the discovered pool trustline keys before processing, deletes the pool-share trustline to release reserves, computes both withdrawal amounts with `getPoolWithdrawalAmount`, and maps low reserve / too-many-sponsoring outcomes to operation failure. `SetTrustLineFlagsOpFrame::isOpSupported` requires protocol version 17. This confirms that discovery ordering and protocol version belong in the future compatibility model.
+
 CAP-0035 supplies the Classic revocability/clawback flags and the trustline clawback interaction. It does not replace CAP-0038's pool-redemption rule.
 
 The current `rs-stellar-xdr` release page lists 28.0.1 as latest (released 2026-09-29, commit `ced6bd3`, including a VecM deserialization security fix). The spike pins that version but does not yet claim all current network protocol versions are supported. A production engine must bind the decoded XDR branch and ledger protocol version to an explicit compatibility table.
@@ -75,3 +77,7 @@ The current `rs-stellar-xdr` release page lists 28.0.1 as latest (released 2026-
 - CAP index: https://github.com/stellar/stellar-protocol/blob/master/core/README.md (accessed 2026-10-27).
 - RPC `getLedgerEntries`: https://developers.stellar.org/docs/data/apis/rpc/api-reference/methods/getLedgerEntries (accessed 2026-10-27).
 - Rust XDR releases: https://github.com/stellar/rs-stellar-xdr/releases (accessed 2026-10-27).
+- Stellar Core `SetTrustLineFlagsOpFrame.cpp`: https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/SetTrustLineFlagsOpFrame.cpp (inspected 2026-10-27).
+- Stellar Core `TrustFlagsOpFrameBase.cpp`: https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/TrustFlagsOpFrameBase.cpp (inspected 2026-10-27).
+- Stellar Core `TransactionUtils.cpp`: https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/TransactionUtils.cpp (inspected 2026-10-27).
+- Stellar Core authorization tests: https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/test/SetTrustLineFlagsTests.cpp (inspected 2026-10-27).
