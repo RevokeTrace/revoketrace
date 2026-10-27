@@ -880,6 +880,19 @@ mod tests {
             owner_pool_shares: 125,
             sponsor: None,
         });
+        state.pool_share_trustlines.push(PoolShareState {
+            pool_id: "pool-3".to_owned(),
+            owner: "holder".to_owned(),
+            asset_a: "USD".to_owned(),
+            asset_a_issuer: "wrong-issuer".to_owned(),
+            asset_b: "EUR".to_owned(),
+            asset_b_issuer: "other-issuer".to_owned(),
+            reserve_a: 5_000,
+            reserve_b: 8_000,
+            total_pool_shares: 1_000,
+            owner_pool_shares: 125,
+            sponsor: None,
+        });
         state.accounts.push(AccountState {
             id: "other-holder".to_owned(),
             balance_stroops: 20_000_000,
@@ -889,6 +902,7 @@ mod tests {
             num_sponsored: 0,
         });
         state.discovery.pool_ids.push("pool-2".to_owned());
+        state.discovery.pool_ids.push("pool-3".to_owned());
         state.discovery.manifest_sha256 = discovery_manifest_sha256(
             &state.network_passphrase,
             state.ledger_sequence,
