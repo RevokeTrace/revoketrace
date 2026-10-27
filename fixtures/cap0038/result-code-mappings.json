@@ -1,0 +1,19 @@
+{
+  "schema": "stellar-result-code-mappings-v1",
+  "xdr_version": "28.0.1",
+  "source_urls": [
+    "https://github.com/stellar/stellar-protocol/blob/master/core/cap-0038.md",
+    "https://github.com/stellar/rs-stellar-xdr/blob/v28.0.1/src/generated/allow_trust_result_code.rs",
+    "https://github.com/stellar/rs-stellar-xdr/blob/v28.0.1/src/generated/set_trust_line_flags_result_code.rs",
+    "https://github.com/stellar/rs-stellar-xdr/blob/v28.0.1/src/generated/operation_result_code.rs"
+  ],
+  "mappings": [
+    {"operation": "AllowTrust", "code": "ALLOW_TRUST_SUCCESS", "numeric": 0, "outcome": "UNVERIFIED_FORECAST"},
+    {"operation": "AllowTrust", "code": "ALLOW_TRUST_LOW_RESERVE", "numeric": -6, "outcome": "SUPPORTED_BLOCKED"},
+    {"operation": "SetTrustLineFlags", "code": "SET_TRUST_LINE_FLAGS_SUCCESS", "numeric": 0, "outcome": "UNVERIFIED_FORECAST"},
+    {"operation": "SetTrustLineFlags", "code": "SET_TRUST_LINE_FLAGS_LOW_RESERVE", "numeric": -5, "outcome": "SUPPORTED_BLOCKED"},
+    {"operation": "outer", "code": "opTOO_MANY_SPONSORING", "numeric": -6, "outcome": "SUPPORTED_BLOCKED"},
+    {"operation": "outer", "code": "opNOT_SUPPORTED", "numeric": -3, "outcome": "UNSUPPORTED"},
+    {"operation": "outer", "code": "opINNER_without_nested_result", "numeric": 0, "outcome": "INCONCLUSIVE"}
+  ]
+}

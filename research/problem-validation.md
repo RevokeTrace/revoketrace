@@ -21,14 +21,15 @@ This is a deterministic protocol-impact analysis problem, not issuer risk scorin
 
 - A live endpoint cannot prove it discovered every affected pool-share trustline merely by returning successful key lookups. The discovery manifest must identify the enumeration source and its completeness proof.
 - Mixed-ledger reads, stale `lastModifiedLedgerSeq`, different network passphrases, and missing sponsorship extensions make the result inconclusive.
-- A result called `SUPPORTED_SAFE` means “the modeled preconditions and reserve checks pass for the supplied snapshot”; it is not a guarantee of inclusion or future ledger state.
+- A result called `UNVERIFIED_FORECAST` means “the modeled preconditions and reserve checks pass for the supplied snapshot”; discovery completeness remains unverified and it is not a guarantee of inclusion or future ledger state. `SUPPORTED_SAFE` is reserved for a future trusted capture/verifier.
 - Exact network result mapping and protocol capability flags need live XDR/core validation before being treated as stable API.
 
 ## Result semantics
 
 | Internal classification | Meaning | Required behavior |
 | --- | --- | --- |
-| `SUPPORTED_SAFE` | Supported operation; complete, coherent snapshot; modeled result has no known blocking condition | Report predicted deltas and warnings; never call it network confirmation |
+| `UNVERIFIED_FORECAST` | Supplied snapshot is internally coherent and has no modeled blocker, but discovery completeness is not independently verified | Report predicted deltas with an explicit warning; never present as transaction safety |
+| `SUPPORTED_SAFE` | Reserved for a future independently verified ledger-complete capture | Not currently emitted |
 | `SUPPORTED_BLOCKED` | Supported operation; complete snapshot; a modeled protocol precondition or reserve/sponsorship limit fails | Report the blocking reason and affected entries |
 | `INCONCLUSIVE` | A supported operation cannot be safely evaluated because required state is missing, stale, mixed-ledger, or discovery is incomplete | Fail closed; do not downgrade to safe |
 | `UNSUPPORTED` | Operation, asset domain, protocol version, or state shape is outside the MVP implementation | Identify the exact unsupported feature |
