@@ -35,6 +35,12 @@ The future capture adapter must:
 6. Reconcile pool IDs, pool parameters, asset ordering, owner, sponsor, and account counters. Duplicate keys, contradictory values, missing references, or changed ledger sequences invalidate the snapshot.
 7. Store endpoint, network passphrase, target/read ledger, request keys, returned entry hashes, discovery manifest hash, and source version.
 
+## Sponsorship ordering boundary
+
+The pinned core implementation first identifies the pool-share trustline's actual backer (`getTrustLineBacker`), deletes that trustline to release its two-reserve liability, and then creates each claimable balance. If the backer is currently in a sponsorship sandwich, core uses the sandwich's replacement sponsor and checks that account's available reserve and sponsoring-counter capacity. Outside a sandwich, core establishes sponsorship with the backer and deliberately reuses the reserve released by the deleted pool-share trustline. [Core implementation](https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/TransactionUtils.cpp)
+
+The spike therefore records the actual pool-share sponsor, requires explicit Begin/revoke/End operation indices for a modeled handoff, checks sponsor counters and liabilities, and refuses to infer an active sponsorship context for an unsponsored trustline. It does not construct or decode a full transaction envelope, so this remains a feasibility boundary rather than complete operation-order proof.
+
 ## Mandatory refusal conditions
 
 Return `INCONCLUSIVE`, never `SUPPORTED_SAFE`, when any of the following holds:
@@ -47,4 +53,4 @@ Return `INCONCLUSIVE`, never `SUPPORTED_SAFE`, when any of the following holds:
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository has no capture adapter and therefore makes no complete-discovery claim. The existing `discovery_complete` boolean is a fixture assertion only; it is not evidence by itself.
+The current repository has no capture adapter and therefore makes no live complete-discovery claim. The evaluator now requires a manifest whose pool IDs exactly match the supplied pool-share entries, whose ledger target matches the snapshot, and whose SHA-256 digest matches the canonical manifest material. Synthetic fixtures may use `SyntheticFixture`; they are deterministic test evidence only. A caller cannot obtain a safe result by setting a standalone `discovery_complete` boolean.

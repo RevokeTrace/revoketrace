@@ -6,12 +6,14 @@
 | T02 | Maintain-liabilities-only -> unauthorized | `SUPPORTED_SAFE` or `SUPPORTED_BLOCKED` | Redemption path; possible low reserve | 2 offline + 4 live |
 | T03 | Fully authorized -> unauthorized | same as T02 | Redemption path | 2 offline + 4 live |
 | T04 | Pool share redemption with both nonzero outputs and non-issuer owner | `SUPPORTED_SAFE` | Delete pool-share trustline; 2 claimable balances | 2 offline |
-| T05 | One withdrawn amount is zero | `SUPPORTED_SAFE` | Exactly 1 claimable balance | 2 offline |
-| T06 | Both withdrawn amounts zero | `SUPPORTED_SAFE` | 0 claimable balances | 2 offline |
+| T05 | Valid pool, one constituent issued by owner | `SUPPORTED_SAFE` | Exactly 1 claimable balance | 2 offline |
+| T06 | Valid pool, revoked-asset withdrawal floors to zero and other asset is issued by owner | `SUPPORTED_SAFE` | 0 claimable balances | 2 offline |
+| T06a | Nonzero total shares with zero reserve | `INCONCLUSIVE` | Arithmetic-only edge case; not accepted as ledger-reachable | 2 offline |
 | T07 | Owner is issuer of one constituent | `SUPPORTED_SAFE` | Skip that asset's claimable balance | 2 offline |
 | T08 | Unsponsored pool trustline | `SUPPORTED_SAFE` | Trustor sponsors outputs after deletion | 2 offline |
 | T09 | Sponsored pool trustline | `SUPPORTED_SAFE` | Existing sponsor sponsors outputs | 2 offline |
 | T10 | Active sponsorship sandwich with insufficient replacement sponsor balance | `SUPPORTED_BLOCKED` | Low reserve failure | 2 offline |
+| T10a | Unsponsored trustline plus ambiguous active sponsorship context | `INCONCLUSIVE` | Refuse unsupported sponsorship inference | 2 offline |
 | T11 | Active sponsorship sandwich over `UINT32_MAX` accounting limit | `SUPPORTED_BLOCKED` | Too-many-sponsoring failure | 2 offline |
 | T12 | Missing one affected pool trustline or incomplete discovery manifest | `INCONCLUSIVE` | No SAFE result | 2 offline |
 | T13 | Mixed ledger sequences or stale entries | `INCONCLUSIVE` | No SAFE result | 2/3 |

@@ -13,21 +13,35 @@
     },
     {
       "id": "one-output",
+      "reserves": {"a": 5000, "b": 8000},
+      "total_pool_shares": 1000,
+      "owner_pool_shares": 125,
+      "asset_b_issuer_is_owner": true,
+      "expected_withdrawal": {"a": 625, "b": 1000},
+      "expected_claimable_balance_count": 1,
+      "ledger_state": "valid: second constituent is issued by the pool-share owner",
+      "expected_classification": "SUPPORTED_SAFE"
+    },
+    {
+      "id": "zero-outputs",
+      "reserves": {"a": 1, "b": 8000},
+      "total_pool_shares": 1000,
+      "owner_pool_shares": 1,
+      "asset_b_issuer_is_owner": true,
+      "expected_withdrawal": {"a": 0, "b": 8},
+      "expected_claimable_balance_count": 0,
+      "ledger_state": "valid: revoked-asset withdrawal floors to zero and second constituent is issued by the owner",
+      "expected_classification": "SUPPORTED_SAFE"
+    },
+    {
+      "id": "arithmetic-only-one-output",
       "reserves": {"a": 5000, "b": 0},
       "total_pool_shares": 1000,
       "owner_pool_shares": 125,
       "expected_withdrawal": {"a": 625, "b": 0},
       "expected_claimable_balance_count": 1,
-      "expected_classification": "SUPPORTED_SAFE"
-    },
-    {
-      "id": "zero-outputs",
-      "reserves": {"a": 0, "b": 0},
-      "total_pool_shares": 1000,
-      "owner_pool_shares": 125,
-      "expected_withdrawal": {"a": 0, "b": 0},
-      "expected_claimable_balance_count": 0,
-      "expected_classification": "SUPPORTED_SAFE"
+      "ledger_state": "arithmetic-only: zero reserve with nonzero total shares is not accepted as a ledger-reachable pool state",
+      "expected_classification": "INCONCLUSIVE"
     },
     {
       "id": "active-sponsorship-low-reserve",
