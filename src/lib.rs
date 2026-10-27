@@ -259,6 +259,13 @@ pub struct PoolShareState {
     pub sponsor: Option<String>,
     #[serde(default)]
     pub last_modified_ledger_seq: Option<u32>,
+    /// Pool-wide count of trustlines currently holding shares in this pool
+    /// (LiquidityPoolConstantProductEntry::poolSharesTrustLineCount per
+    /// stellar-core TransactionUtils.cpp `decrementPoolSharesTrustLineCount`).
+    /// When this evidence is unavailable, the evaluator cannot determine
+    /// whether this redemption will delete the pool entry and must not guess.
+    #[serde(default)]
+    pub pool_shares_trust_line_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +352,14 @@ pub struct PoolRedemptionForecast {
     pub withdrawn_a_stroops: u64,
     pub withdrawn_b_stroops: u64,
     pub claimable_balances: Vec<ClaimableBalanceForecast>,
+    /// Whether the liquidity pool entry itself will be deleted by this
+    /// redemption, per stellar-core `decrementPoolSharesTrustLineCount`
+    /// (the pool is erased when `poolSharesTrustLineCount` reaches 0 after
+    /// this trustline's removal). `None` when the evaluator was not given
+    /// independently verified evidence of the pool's current trustline
+    /// count and therefore cannot determine this without guessing.
+    #[serde(default)]
+    pub pool_will_be_deleted: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1117,12 +1132,31 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
             *new_sponsorship_obligations.entry(replacement).or_insert(0) += num_cb as u32;
         }
 
+        let pool_will_be_deleted = match pool.pool_shares_trust_line_count {
+            Some(0) => {
+                eval_errors.push(format!(
+                    "{}: poolSharesTrustLineCount is already zero but the owner still holds a pool-share trustline; evidence is contradictory",
+                    pool.pool_id
+                ));
+                None
+            }
+            Some(count) => Some(count - 1 == 0),
+            None => {
+                eval_warnings.push(format!(
+                    "{}: liquidity pool counter change (poolSharesTrustLineCount) is not forecast; pool_shares_trust_line_count evidence was not supplied",
+                    pool.pool_id
+                ));
+                None
+            }
+        };
+
         redemptions.push(PoolRedemptionForecast {
             pool_id: pool.pool_id.clone(),
             owner: pool.owner.clone(),
             withdrawn_a_stroops: amount_a,
             withdrawn_b_stroops: amount_b,
             claimable_balances,
+            pool_will_be_deleted,
         });
     }
 
@@ -1456,6 +1490,7 @@ mod tests {
                 owner_pool_shares: 125,
                 sponsor: sponsor.map(str::to_owned),
                 last_modified_ledger_seq: None,
+                pool_shares_trust_line_count: None,
             }],
             sponsorship_handoffs: Vec::new(),
         }
@@ -1600,6 +1635,7 @@ mod tests {
             owner_pool_shares: 125,
             sponsor: None,
             last_modified_ledger_seq: None,
+            pool_shares_trust_line_count: None,
         });
         state.pool_share_trustlines.push(PoolShareState {
             pool_id: pool3_id.clone(),
@@ -1614,6 +1650,7 @@ mod tests {
             owner_pool_shares: 125,
             sponsor: None,
             last_modified_ledger_seq: None,
+            pool_shares_trust_line_count: None,
         });
         state.accounts.push(AccountState {
             id: "other-holder".to_owned(),
@@ -1805,6 +1842,82 @@ mod tests {
         assert_eq!(
             map_operation_result(OperationResultCode::OpInner),
             Classification::Inconclusive
+        );
+    }
+
+    // Phase 4C independent verification fixture.
+    //
+    // Real SetTrustLineFlags operation observed on the Stellar Testnet
+    // (network passphrase "Test SDF Network ; September 2015"), not a
+    // synthetic construction. Retrieved 2026-10-27 from Horizon testnet
+    // (https://horizon-testnet.stellar.org). ledger: 5417676; transaction
+    // hash: 8856ad8fc4f91d5ad3021e7bbc35f9aedc3977286fa1a07d936e6de49e402d84;
+    // operation index: 0, type: set_trust_line_flags; source account:
+    // GDEYL6GBXNOB2RRRWOKBFX6EY3K5SFCKTWH43DX5KCNJGHLZSAOK7DAL; trustor:
+    // GCTWO2J7M4T7KKQ3UTJ4DFL7AH6ACX45FKW2NPVLMH5CD6L3IWRNVB2B; asset: SKY
+    // (credit_alphanum4); clear_flags: [clawback_enabled]; Horizon-reported
+    // result: successful.
+    //
+    // envelope_xdr/result_xdr below are copied verbatim from Horizon's JSON
+    // response for this transaction; no pre-operation ledger state (prior
+    // trustline flags) was independently captured for this fixture, so this
+    // test only verifies (a) the real result XDR decodes to
+    // SetTrustLineFlagsResultCode::Success and that RevokeTrace's own
+    // result-code mapping agrees, and (b) that a clawback-only flag change
+    // (as evidenced by the real set_flags/clear_flags encoded in the
+    // envelope) is not classified as a forced pool-share redemption
+    // transition by classify_transition, matching stellar-core's
+    // TrustFlagsOpFrameBase::doApply (shouldRemoveOffers is derived only
+    // from the AUTHORIZED / AUTHORIZED_TO_MAINTAIN_LIABILITIES bits).
+    #[test]
+    fn independent_testnet_fixture_clawback_only_change_is_not_forced_redemption() {
+        const RESULT_XDR: &str = "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAAVAAAAAAAAAAA=";
+        const ENVELOPE_XDR: &str = "AAAAAgAAAADJhfjBu1wdRjGzlBLfxMbV2RRKnY/Njv1QmpMdeZAcrwAAAGQAUqrDAAAABQAAAAAAAAAAAAAAAQAAAAAAAAAVAAAAAKdnaT9nJ/UqG6TTwZV/AfwBX50qraa+q2H6Ifl7RaLaAAAAAVNLWQAAAAAAyYX4wbtcHUYxs5QS38TG1dkUSp2PzY79UJqTHXmQHK8AAAAEAAAAAAAAAAAAAAABeZAcrwAAAECvtAwIi7xvC2eHwLps6DCjTARBiRYCpIGcg0+x6/tOHitUnwcI7teqxNZGH4dgz07sQfTs6wO11mF4mERu+JoD";
+
+        let result = stellar_xdr::TransactionResult::from_xdr_base64(RESULT_XDR, Limits::none())
+            .expect("real testnet result XDR must decode");
+        let op_results = match result.result {
+            stellar_xdr::TransactionResultResult::TxSuccess(ops) => ops,
+            other => panic!("expected TxSuccess, got {:?}", other),
+        };
+        let set_flags_result = match &op_results[0] {
+            stellar_xdr::OperationResult::OpInner(
+                stellar_xdr::OperationResultTr::SetTrustLineFlags(r),
+            ) => r,
+            other => panic!("expected SetTrustLineFlags op result, got {:?}", other),
+        };
+        assert_eq!(
+            map_set_trust_line_flags_result(set_flags_result.discriminant()),
+            Classification::UnverifiedForecast,
+            "RevokeTrace's mapping must agree with the real, independently observed Success result"
+        );
+
+        let envelope =
+            stellar_xdr::TransactionEnvelope::from_xdr_base64(ENVELOPE_XDR, Limits::none())
+                .expect("real testnet envelope XDR must decode");
+        let tx = match envelope {
+            stellar_xdr::TransactionEnvelope::Tx(e) => e.tx,
+            other => panic!("expected a V1 transaction envelope, got {:?}", other),
+        };
+        let op = &tx.operations[0];
+        let set_trust_op = match &op.body {
+            stellar_xdr::OperationBody::SetTrustLineFlags(op) => op,
+            other => panic!("expected SetTrustLineFlags operation body, got {:?}", other),
+        };
+        assert_eq!(set_trust_op.set_flags, 0);
+        assert_eq!(set_trust_op.clear_flags, TRUSTLINE_CLAWBACK_ENABLED_FLAG);
+
+        // A real trustline that had AUTHORIZED_FLAG set before this operation
+        // keeps AUTHORIZED_FLAG set after it; only the clawback bit (which
+        // `maintains_liabilities` does not consider) changes, so this must
+        // not be classified as a forced pool-share redemption.
+        let before_flags = AUTHORIZED_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        let after_flags =
+            (before_flags & !set_trust_op.clear_flags) | (set_trust_op.set_flags as u32);
+        assert_ne!(
+            classify_transition(before_flags, after_flags),
+            Transition::ForcedPoolRedemption,
+            "clearing only the clawback flag must never trigger forced pool-share redemption"
         );
     }
 
@@ -3113,6 +3226,90 @@ mod tests {
             "canonical decoded key ordering must place 0x0a before 0x0b, despite ASCII 'B' < 'a'"
         );
         assert_eq!(report.pool_redemptions[1].pool_id, pool_b_id);
+    }
+
+    #[test]
+    fn missing_pool_shares_trust_line_count_evidence_leaves_deletion_unforecast() {
+        // Phase 4C: without independently verified evidence of the pool's
+        // current poolSharesTrustLineCount, the evaluator must not guess
+        // whether this redemption deletes the liquidity pool entry
+        // (stellar-core TransactionUtils.cpp `decrementPoolSharesTrustLineCount`).
+        let snap = snapshot(None, true);
+        assert_eq!(
+            snap.pool_share_trustlines[0].pool_shares_trust_line_count,
+            None
+        );
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, None);
+        assert!(
+            report.warnings.iter().any(|w| {
+                w.contains("liquidity pool counter change") && w.contains("not forecast")
+            }),
+            "expected explicit warning about unforecast liquidity pool counter change, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn pool_deletion_is_forecast_deterministically_when_counter_evidence_is_supplied() {
+        // When the owner is the pool's only remaining pool-share trustline
+        // holder (count == 1), this redemption removes the last trustline
+        // and stellar-core erases the pool entry.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(1);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, Some(true));
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|w| w.contains("liquidity pool counter change")),
+            "no counter warning should be emitted once evidence is supplied"
+        );
+    }
+
+    #[test]
+    fn pool_survives_redemption_when_other_trustlines_remain() {
+        // Two other accounts still hold pool-share trustlines in this pool
+        // (count == 3 before this one is removed), so the pool entry
+        // survives this redemption.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(3);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, Some(false));
+    }
+
+    #[test]
+    fn contradictory_zero_pool_shares_trust_line_count_fails_closed() {
+        // A supplied counter of 0 while the owner still holds a pool-share
+        // trustline in this very pool is internally contradictory evidence;
+        // the evaluator must fail closed rather than guess a result.
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].pool_shares_trust_line_count = Some(0);
+
+        let op = revoke();
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("poolSharesTrustLineCount is already zero")),
+            "expected a contradictory-evidence error, got: {:?}",
+            report.errors
+        );
     }
 
     #[test]

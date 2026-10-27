@@ -55,6 +55,58 @@ Safety boundaries remain strictly enforced:
 - Any missing or unproven operation context, mixed-ledger evidence, or sponsorship mismatch fails closed as `INCONCLUSIVE`.
 - Phase 4C cannot begin until Phase 4B is merged into `main` following independent review.
 
+## Phase 4C status
+
+Phase 4C independently re-verified Phase 4B's accounting against the
+pinned stellar-core source (commit `05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4`,
+re-fetched live, not recalled from memory) and against one real Stellar
+Testnet transaction. See `research/phase4c-protocol-verification.md` for
+the full verification matrix, fixture provenance, and discrepancy list.
+
+Summary of outcome:
+- One genuine gap was found and fixed: liquidity-pool counter changes
+  (`poolSharesTrustLineCount` reaching zero, which deletes the pool entry)
+  were not forecast at all. `PoolShareState.pool_shares_trust_line_count`
+  (optional evidence) and `PoolRedemptionForecast.pool_will_be_deleted`
+  (computed only when that evidence is present; an explicit warning is
+  emitted otherwise, and contradictory evidence fails closed as
+  `INCONCLUSIVE`) were added.
+- Every other protocol rule checked in this phase (forced-redemption
+  trigger, canonical pool-share processing order, redemption rounding,
+  issuer-claimant skip, clawback inheritance, claimable-balance ID
+  derivation, sponsorship-sandwich handling, direct reserve reuse,
+  protocol-version gating) was independently re-derived from source and
+  found already correct in Phase 4B.
+- `liquidityPoolUseCount`'s *post-operation* value is still not forecast
+  (only used as a discovery-completeness check); this is an accepted,
+  documented limitation, not a blocking defect, since it is ledger
+  bookkeeping rather than a pass/fail condition.
+- No independently verified Testnet or Mainnet fixture exists yet for
+  forced pool redemption, claimable-balance creation, or a sponsorship
+  sandwich; all such test coverage remains synthetic and is labeled as
+  such. One real Testnet `SetTrustLineFlags` operation (a clawback-only
+  flag change, which does not exercise pool redemption) was used to
+  verify the flag-mapping and transition-classification layer against
+  live, independently observed protocol behavior.
+- `SUPPORTED_SAFE` remains strictly unreachable; nothing in Phase 4C
+  changes that boundary.
+- Multi-operation transaction streams (earlier operations in the same
+  transaction, multiple interleaved sponsorship transitions, multiple
+  revocations in one transaction) remain only partially modeled through
+  caller-supplied `sponsorship_handoffs`; the evaluator still has no way
+  to independently verify that the supplied handoff list is the complete
+  and accurate operation stream of the real transaction, and a supplied
+  handoff is not treated as proof that the full transaction is valid.
+- A follow-up review found that `pool_shares_trust_line_count` extraction
+  in `src/discovery.rs` and `src/evidence.rs` used `u32::try_from(...).ok()`,
+  which silently downgraded a negative or otherwise unrepresentable raw
+  ledger counter into "evidence not supplied" instead of rejecting it as
+  malformed. This has been corrected: both files now validate the raw
+  `i64` explicitly and return `Classification::Inconclusive` on an
+  invalid value, while a valid counter (including `0`) is still retained
+  exactly. 7 new tests cover negative, unrepresentable, positive, and
+  genuinely-missing counter evidence; 129 tests pass in total.
+
 ## Historical feasibility spike status
 
 The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.
