@@ -19,6 +19,12 @@ No private keys, signing, transaction construction, broadcasting, automatic repa
 
 The engine must fail closed. The current spike can report `UNVERIFIED_FORECAST` when supplied data is internally coherent, but it cannot prove that every affected ledger entry was discovered. Missing pool discovery, missing sponsorship context, stale/mixed-ledger data, wrong network, unsupported protocol version, or unvalidated result mappings must produce `INCONCLUSIVE`. No current code path produces `SUPPORTED_SAFE`.
 
+The Phase 1C discovery prototype validates a bounded single-batch RPC response against exact
+requested keys and decoded XDR identities. It does not establish general candidate enumeration,
+network base-reserve configuration, or sponsorship identities/counters. When those preflight
+inputs are unavailable, the discovery result remains research evidence rather than a complete
+reserve or sponsorship snapshot.
+
 ## Phase 1 status
 
 The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.

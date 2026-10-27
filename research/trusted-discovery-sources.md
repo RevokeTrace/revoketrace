@@ -1,8 +1,8 @@
-# Trusted Discovery Sources: Comparative Evaluation
+# Discovery Sources: Comparative Evaluation
 
-**Phase:** Phase 1C (Trusted Discovery Source and Ledger Consistency)  
+**Phase:** Phase 1C (Discovery Source and Ledger Consistency)  
 **Date:** 2026-10-27  
-**Status:** Authoritative Research  
+**Status:** Research-only feasibility evidence  
 
 ---
 
@@ -30,7 +30,7 @@ The mission of Phase 1C is to establish and verify the smallest practical, read-
 | **B. Horizon Account Balances** | **Supported** (`GET /accounts/{id}` balances) | **Unsupported** (tip/ingested state only) | **Weak** (independent database; drift vs Core) | Low (public HTTP endpoint) | **Supported** (via on-chain counter reconciliation) |
 | **C. Stellar History Archives (HAS)** | **Supported** (BucketList dump parsing) | **Supported** (every 64-ledger checkpoint) | **Authoritative** (cryptographically committed) | **Prohibitive for CLI** (multi-GB downloads, 5-min lag) | Authoritative |
 | **D. Captive Core Ingestion** | **Supported** (in-memory SQLite / stream) | **Supported** (bounded historical ledger sync) | **Authoritative** (direct Core consensus) | **Heavy** (requires local binary, sync, disk) | Authoritative |
-| **E. Two-Tier Verified Discovery (Selected)** | **Supported** (Horizon candidates + RPC verification) | **Bounded Tip Only** (tip snapshot; historical unproven) | **Guaranteed** (RPC single-batch verification) | **Minimal** (zero-storage, CLI-friendly) | **Mathematically Guaranteed** ($K == N$ on-chain check) |
+| **E. Two-Tier Candidate Discovery (Selected for spike)** | **Supported** (Horizon candidates + RPC verification) | **Bounded Tip Only** (tip snapshot; historical unproven) | **Bounded** (single-batch response-set and identity checks) | **Minimal** (zero-storage, CLI-friendly) | **Counter reconciliation for the supplied candidate set only** |
 
 ---
 
@@ -90,7 +90,7 @@ flowchart TD
     T1 --> |"GET /accounts/{trustor}"| HZ["Horizon API"]
     HZ --> |"Candidate Pool IDs [P_1, P_2, ...]"| T2["Tier 2: Single-Batch Atomic Verification (Stellar RPC)"]
     T2 --> |"getLedgerEntries([Trustor, Issuer, CreditTL, PoolTLs, PoolEntries])"| RPC["Stellar RPC / Captive Core"]
-    RPC --> |"Atomic Batch Snapshot (latestLedger)"| V["Authoritative Verifier & Invariant Engine"]
+    RPC --> |"Bounded Batch Evidence (latestLedger)"| V["Bounded Verifier & Invariant Engine"]
     V --> V1["1. Derive & verify canonical pool IDs"]
     V --> V2["2. Filter pools pairing target asset (code, issuer)"]
     V --> V3["3. Reconcile verified pool count against liquidityPoolUseCount"]
@@ -100,9 +100,9 @@ flowchart TD
     Decision --> |No / Mismatch / Lag| Inconclusive["Inconclusive (Fail Closed)"]
 ```
 
-### Why This Design Meets Every Engineering Requirement:
-1. **Autonomous:** The caller provides only `(trustor, asset)`. Candidate pool IDs are discovered automatically.
-2. **Zero Storage / Zero Infrastructure:** No local database, daemon, or multi-gigabyte sync required.
-3. **Byzantine Fault Tolerant:** If Horizon lags, omits a pool, returns a deleted pool, or is compromised by an adversary, the on-chain `liquidityPoolUseCount` check ($K == N$) fails, and RevokeTrace **fails closed** (`Inconclusive`).
-4. **Single-Batch Atomic Consistency:** All candidate pools and the target credit trustline are fetched in a single RPC request, guaranteeing they reflect the exact same `latestLedger` sequence.
-5. **Preserves the Safety Contract:** Because live discovery is bounded to the live tip and relies on Horizon for candidate generation, the maximum reachable classification remains `UnverifiedForecast`. `SupportedSafe` remains safely unreachable.
+### What This Spike Demonstrates:
+1. **Autonomous candidate seeding:** The caller provides `(trustor, asset)` and Horizon supplies candidate pool IDs, but Horizon remains an untrusted indexer.
+2. **Bounded response verification:** Duplicate, unexpected, missing, malformed, or contradictory RPC entries fail closed. Decoded account, trustline, pool-share, and pool identities are checked against their requested keys.
+3. **Single-batch evidence:** Candidate pools and target entries are requested in one batch subject to the documented 200-key limit; all returned entries must satisfy `lastModifiedLedgerSeq <= latestLedger`.
+4. **Counter reconciliation boundary:** `liquidityPoolUseCount` reconciles the supplied candidate set at the queried tip, but does not independently prove that an undiscovered candidate never existed or establish historical completeness.
+5. **Incomplete preflight boundary:** The response does not establish base-reserve configuration or sponsorship identities/counters. The result is discovery evidence only; `SupportedSafe` remains unreachable.

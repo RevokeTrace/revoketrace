@@ -39,7 +39,11 @@ The future capture adapter must:
 
 The pinned core implementation first identifies the pool-share trustline's actual backer (`getTrustLineBacker`), deletes that trustline to release its two-reserve liability, and then creates each claimable balance. If the backer is currently in a sponsorship sandwich, core uses the sandwich's replacement sponsor and checks that account's available reserve and sponsoring-counter capacity. Outside a sandwich, core establishes sponsorship with the backer and deliberately reuses the reserve released by the deleted pool-share trustline. [Core implementation](https://github.com/stellar/stellar-core/blob/05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4/src/transactions/TransactionUtils.cpp)
 
-The spike therefore records the actual pool-share sponsor, requires explicit Begin/revoke/End operation indices for a modeled handoff, checks sponsor counters and liabilities, and refuses to infer an active sponsorship context for an unsponsored trustline. It does not construct or decode a full transaction envelope, so this remains a feasibility boundary rather than complete operation-order proof.
+The current RPC discovery response does not expose enough evidence to establish the actual
+pool-share sponsor, sponsor counters, reserve liability, or a Begin/revoke/End operation sandwich.
+The prototype therefore marks sponsorship evidence incomplete and does not promote discovery into
+a complete preflight snapshot. A future capture adapter must obtain and reconcile those fields
+before modeling sponsorship replacement or claimable-balance sponsorship.
 
 ## Mandatory refusal conditions
 

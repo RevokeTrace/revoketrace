@@ -1,8 +1,8 @@
 # Ledger Consistency Models and Point-in-Time Guarantees
 
-**Phase:** Phase 1C (Trusted Discovery Source and Ledger Consistency)  
+**Phase:** Phase 1C (Discovery Source and Ledger Consistency)  
 **Date:** 2026-10-27  
-**Status:** Authoritative Research  
+**Status:** Research-only feasibility evidence  
 
 ---
 
@@ -17,16 +17,16 @@ Evaluating a proposed issuer revocation requires reading multiple interrelated l
 
 If these entries are read across different ledger sequences, the evaluation is subject to **phantom reads, torn state, and invalid reserve calculations**.
 
-This document investigates the four ledger consistency models and defines the formal consistency guarantee demonstrated by RevokeTrace.
+This document investigates the four ledger consistency models and defines the bounded consistency evidence demonstrated by RevokeTrace. It does not certify complete discovery or complete reserve/sponsorship preflight readiness.
 
 ---
 
 ## 2. Investigation of Consistency Approaches
 
-### Approach 1: Bounded Current-Tip Single-Batch Capture (DEMONSTRATED & PROVEN)
+### Approach 1: Bounded Current-Tip Single-Batch Evidence (DEMONSTRATED)
 - **Mechanism:** Submit all required `LedgerKey`s (target trustor, issuer, credit trustline, all candidate pool-share trustlines, and all candidate pool entries) in a **single atomic request** to Stellar RPC `getLedgerEntries`.
 - **Underlying Engine Guarantee:** Soroban RPC is backed by an internal Captive Core instance. When `getLedgerEntries` is invoked, Captive Core executes the query against a single locked read snapshot of the ledger at its current close tip (`latestLedger`).
-- **Atomicity:** All entries returned in that single response belong to the exact same ledger sequence `latestLedger`.
+- **Atomicity boundary:** The response is treated as one current-tip read, and the prototype additionally requires exact requested-key coverage, decoded identity/type matches, and `lastModifiedLedgerSeq <= latestLedger`. This does not establish historical completeness or sponsorship/base-reserve completeness.
 - **Bound:** Up to 200 ledger keys can be queried atomically in one request. For an issuer revocation preflight, a typical account holds 0 to a few dozen pool shares (bounded by the account's subentry limit, maximum 1,000 subentries on Stellar Classic). A single batch accommodates all keys for $>99.9\%$ of accounts.
 
 ### Approach 2: Historical Point-in-Time Ledger Export (UNSUPPORTED OVER PUBLIC APIS)
@@ -57,7 +57,7 @@ This document investigates the four ledger consistency models and defines the fo
 
 ---
 
-## 3. Formal Invariant: Counter as a Byzantine Fault Detector
+## 3. Formal Invariant: Counter as a Bounded Candidate-Set Check
 
 Let:
 - $T$ be the target credit trustline on-chain at ledger $L_{\text{rpc}}$.
@@ -68,9 +68,13 @@ Let:
   2. Asset matches: $P_i$ pairs $(A_{\text{code}}, A_{\text{issuer}})$.
   3. Trustor ownership matches: Trustor $A$ holds a `TrustLineEntry` for $P_i$ with `shares > 0`.
 
-### Invariant Theorem:
-$$\text{If } |\mathcal{P}_{\text{rpc}}| == N \text{ and all entries in } \mathcal{P}_{\text{rpc}} \cup \{T\} \text{ are returned in a single batch at } L_{\text{rpc}},$$
-$$\text{then } \mathcal{P}_{\text{rpc}} \text{ is guaranteed to be the exact, complete, and exhaustive set of affected pools at ledger } L_{\text{rpc}}.$$
+### Bounded conclusion:
+$$\text{If } |\mathcal{P}_{\text{rpc}}| == N \text{ and all supplied entries are validated in one batch at } L_{\text{rpc}},$$
+$$\text{then the supplied candidate set reconciles with the target counter at } L_{\text{rpc}}.$$ 
+
+This is not a general completeness theorem: an external omission before the RPC request cannot
+be detected merely because the returned subset is internally consistent. The prototype therefore
+does not issue a complete reserve/sponsorship preflight verdict.
 
 ### Failure Modes and Fail-Closed Behavior:
 
@@ -87,11 +91,11 @@ $$\text{then } \mathcal{P}_{\text{rpc}} \text{ is guaranteed to be the exact, co
 
 ## 4. Summary of Demonstrated vs. Unproven Consistency
 
-1. **Demonstrated & Proven:**
-   - Single-batch atomic consistency across target credit trustline, pool trustlines, and pool entries at the current ledger tip `latestLedger`.
-   - Complete detection and rejection of Horizon indexing lag, omissions, and spurious pool candidates via on-chain `liquidityPoolUseCount`.
+1. **Demonstrated:**
+   - Bounded current-tip response validation across target credit trustline, pool trustlines, and pool entries.
+   - Rejection of many observed Horizon/RPC inconsistencies, including omissions in the supplied key set, wrong identities, and counter mismatch.
 2. **Unproven / Unsupported:**
    - Historical point-in-time consistency at an arbitrary past ledger $L < \text{tip}$ without running a local Captive Core instance.
 3. **Safety Classification Implication:**
-   - Because point-in-time historical discovery remains unproven and candidate enumeration depends on external indexer availability, the maximum reachable safety classification remains **`UnverifiedForecast`**.
+   - Because point-in-time historical discovery, base-reserve configuration, and sponsorship evidence remain incomplete, the output is research-only and cannot be a complete safety preflight. `SupportedSafe` remains unreachable.
    - `SupportedSafe` remains unreachable until an authoritative capture adapter (e.g. native Captive Core streaming) is integrated in a future phase.
