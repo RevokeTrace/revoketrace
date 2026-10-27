@@ -1,11 +1,12 @@
-//! Bounded proof of feasibility for Phase 1B: Ledger-Complete Discovery.
+//! Bounded Phase 1B discovery-feasibility demonstration.
 //!
 //! Demonstrates:
-//! 1. Live network RPC query against Stellar Testnet (`https://soroban-testnet.stellar.org`).
+//! 1. Live network RPC observation against Stellar Testnet (`https://soroban-testnet.stellar.org`).
 //!    - Queries 5 ledger keys (trustor, issuer, credit trustline, two pool share trustlines).
-//!    - Verifies atomic multi-entry response at live ledger tip.
+//!    - Matches every response by exact requested key, independent of response order.
+//!    - Verifies identities and types for this bounded queried set at the live ledger tip.
 //!    - Decodes live XDR to verify on-chain `liquidityPoolUseCount == 2`.
-//! 2. Bounded feasibility snapshot evaluation:
+//! 2. Separate offline replay of a stored fixture at ledger 5413920:
 //!    - Exact account, pool, and asset identity preservation.
 //!    - Cryptographic verification of canonical CAP-0038 constant-product pool IDs (executable assertions).
 //!    - Manifest integrity verification (executable assertions).
@@ -16,19 +17,24 @@
 //!    - Refusal on inconsistent/newer ledger sequences (`Inconclusive`).
 //!    - Refusal on duplicate manifest pool IDs (`Inconclusive`).
 //!    - Preservation of safety boundary: `SupportedSafe` is never reached (`UnverifiedForecast` maximum).
+//!
+//! This example does not enumerate all candidate pool-share trustlines, prove historical
+//! completeness, or execute a revocation transaction. Discovery feasibility remains plausible
+//! but unproven, and Phase 2 remains blocked.
 
 use revoketrace_spike::{
     AUTHORIZED_FLAG, Classification, CreditAsset, OperationSpec, Snapshot, Transition,
     derive_constant_product_pool_id, discovery_manifest_sha256, evaluate,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use stellar_xdr::{
     AccountId, AlphaNum4, AlphaNum12, Asset, AssetCode4, AssetCode12, Hash, LedgerEntryData,
     LedgerKey, LedgerKeyAccount, LedgerKeyTrustLine, Limits, PoolId, PublicKey, ReadXdr,
     TrustLineAsset, TrustLineEntryExt, TrustLineEntryV1Ext, Uint256, WriteXdr,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RpcEntry {
     #[allow(dead_code)]
     key: String,
@@ -50,13 +56,32 @@ struct RpcResponse {
     error: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone)]
+enum ExpectedEntryIdentity {
+    Account(AccountId),
+    CreditTrustline {
+        account_id: AccountId,
+        asset: TrustLineAsset,
+    },
+    PoolShare {
+        account_id: AccountId,
+        pool_id: PoolId,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedEntry {
+    key: String,
+    identity: ExpectedEntryIdentity,
+}
+
 fn pubkey_from_hex(hex_str: &str) -> AccountId {
     let mut bytes = [0u8; 32];
     hex::decode_to_slice(hex_str, &mut bytes).expect("valid hex");
     AccountId(PublicKey::PublicKeyTypeEd25519(Uint256(bytes)))
 }
 
-fn fetch_live_rpc_entries(endpoint: &str, keys: &[String]) -> Result<(u32, Vec<RpcEntry>), String> {
+fn fetch_live_rpc_entries(endpoint: &str, keys: &[String]) -> Result<RpcResult, String> {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -93,7 +118,147 @@ fn fetch_live_rpc_entries(endpoint: &str, keys: &[String]) -> Result<(u32, Vec<R
     }
 
     let result = resp.result.ok_or_else(|| "missing RPC result".to_owned())?;
-    Ok((result.latest_ledger, result.entries))
+    Ok(result)
+}
+
+fn index_response_entries(
+    requested_keys: &[String],
+    entries: &[RpcEntry],
+) -> Result<BTreeMap<String, RpcEntry>, String> {
+    let mut requested = BTreeMap::new();
+    for key in requested_keys {
+        if requested.insert(key, ()).is_some() {
+            return Err(format!("duplicate requested ledger key: {key}"));
+        }
+    }
+
+    let mut indexed = BTreeMap::new();
+    for entry in entries {
+        if !requested.contains_key(&entry.key) {
+            return Err(format!("unexpected ledger key in RPC response: {}", entry.key));
+        }
+        if indexed.insert(entry.key.clone(), entry.clone()).is_some() {
+            return Err(format!("duplicate ledger key in RPC response: {}", entry.key));
+        }
+    }
+    for key in requested_keys {
+        if !indexed.contains_key(key) {
+            return Err(format!("missing requested ledger key from RPC response: {key}"));
+        }
+    }
+    Ok(indexed)
+}
+
+fn verify_entry_identity(entry: &RpcEntry, expected: &ExpectedEntryIdentity) -> Result<(), String> {
+    let data = LedgerEntryData::from_xdr_base64(&entry.xdr, Limits::none())
+        .map_err(|error| format!("malformed ledger-entry XDR for {}: {error}", entry.key))?;
+    match (expected, data) {
+        (ExpectedEntryIdentity::Account(expected_id), LedgerEntryData::Account(account))
+            if account.account_id == *expected_id => Ok(()),
+        (
+            ExpectedEntryIdentity::CreditTrustline {
+                account_id: expected_account,
+                asset: expected_asset,
+            },
+            LedgerEntryData::Trustline(trustline),
+        ) if trustline.account_id == *expected_account && trustline.asset == *expected_asset => {
+            Ok(())
+        }
+        (
+            ExpectedEntryIdentity::PoolShare {
+                account_id: expected_account,
+                pool_id: expected_pool,
+            },
+            LedgerEntryData::Trustline(trustline),
+        ) if trustline.account_id == *expected_account
+            && trustline.asset == TrustLineAsset::PoolShare(expected_pool.clone()) =>
+        {
+            Ok(())
+        }
+        (_, actual) => Err(format!(
+            "ledger-entry identity/type contradiction for {}: expected {:?}, got {:?}",
+            entry.key,
+            expected,
+            actual
+        )),
+    }
+}
+
+fn verify_live_entries(
+    rpc: &RpcResult,
+    expected_entries: &[ExpectedEntry],
+) -> Result<(), String> {
+    let requested_keys: Vec<_> = expected_entries
+        .iter()
+        .map(|expected| expected.key.clone())
+        .collect();
+    let indexed = index_response_entries(&requested_keys, &rpc.entries)?;
+    for expected in expected_entries {
+        let entry = indexed
+            .get(&expected.key)
+            .ok_or_else(|| format!("validated response lost key {}", expected.key))?;
+        verify_entry_identity(entry, &expected.identity)?;
+    }
+    Ok(())
+}
+
+fn verify_live_observation(
+    rpc: &RpcResult,
+    requested_keys: &[String],
+    expected_entries: &[ExpectedEntry],
+) -> Result<(), String> {
+    verify_live_entries(rpc, expected_entries)?;
+    let indexed = index_response_entries(requested_keys, &rpc.entries)?;
+    let credit_key = expected_entries
+        .iter()
+        .find(|expected| matches!(expected.identity, ExpectedEntryIdentity::CreditTrustline { .. }))
+        .ok_or_else(|| "credit trustline expectation is missing".to_owned())?;
+    let credit_tl_entry = indexed
+        .get(&credit_key.key)
+        .ok_or_else(|| "validated credit trustline key disappeared".to_owned())?;
+    let entry_data = LedgerEntryData::from_xdr_base64(&credit_tl_entry.xdr, Limits::none())
+        .map_err(|error| format!("decode live trustline XDR: {error}"))?;
+
+    let LedgerEntryData::Trustline(tl) = entry_data else {
+        return Err("validated credit key did not decode to Trustline".to_owned());
+    };
+    if tl.flags != 1 {
+        return Err(format!(
+            "live credit trustline has unexpected flags: {}",
+            tl.flags
+        ));
+    }
+    let use_count = match tl.ext {
+        TrustLineEntryExt::V1(v1) => match v1.ext {
+            TrustLineEntryV1Ext::V2(v2) => v2.liquidity_pool_use_count,
+            _ => return Err("missing V2 extension on live credit trustline".to_owned()),
+        },
+        _ => return Err("missing V1 extension on live credit trustline".to_owned()),
+    };
+    if use_count != 2 {
+        return Err(format!(
+            "live on-chain liquidityPoolUseCount must equal exactly 2, got {use_count}"
+        ));
+    }
+
+    println!(
+        "  [LIVE] Decoded live TrustLineEntryExtensionV2.liquidityPoolUseCount: {}",
+        use_count
+    );
+    println!(
+        "  [LIVE] Credit trustline lastModifiedLedgerSeq: {}",
+        credit_tl_entry.last_modified_ledger_seq
+    );
+    println!("  [LIVE CONSISTENCY GUARANTEE]");
+    println!(
+        "    - Atomic snapshot is guaranteed across keys in this batch ONLY at latestLedger ({}).",
+        rpc.latest_ledger
+    );
+    println!("    - RPC getLedgerEntries does NOT support historical ledger queries.");
+    println!(
+        "    - Historical point-in-time consistency at an arbitrary past ledger is unproven via RPC."
+    );
+    Ok(())
 }
 
 fn main() {
@@ -125,7 +290,7 @@ fn main() {
     });
     let k3 = LedgerKey::Trustline(LedgerKeyTrustLine {
         account_id: trustor_id.clone(),
-        asset: credit_asset,
+        asset: credit_asset.clone(),
     });
 
     let mut p1_bytes = [0u8; 32];
@@ -138,7 +303,7 @@ fn main() {
     let mut p2_bytes = [0u8; 32];
     hex::decode_to_slice(pool2_hex, &mut p2_bytes).unwrap();
     let k5 = LedgerKey::Trustline(LedgerKeyTrustLine {
-        account_id: trustor_id,
+        account_id: trustor_id.clone(),
         asset: TrustLineAsset::PoolShare(PoolId(Hash(p2_bytes))),
     });
 
@@ -149,77 +314,68 @@ fn main() {
         k4.to_xdr_base64(Limits::none()).unwrap(),
         k5.to_xdr_base64(Limits::none()).unwrap(),
     ];
+    let expected_entries = vec![
+        ExpectedEntry {
+            key: keys[0].clone(),
+            identity: ExpectedEntryIdentity::Account(trustor_id.clone()),
+        },
+        ExpectedEntry {
+            key: keys[1].clone(),
+            identity: ExpectedEntryIdentity::Account(issuer_id.clone()),
+        },
+        ExpectedEntry {
+            key: keys[2].clone(),
+            identity: ExpectedEntryIdentity::CreditTrustline {
+                account_id: trustor_id.clone(),
+                asset: credit_asset.clone(),
+            },
+        },
+        ExpectedEntry {
+            key: keys[3].clone(),
+            identity: ExpectedEntryIdentity::PoolShare {
+                account_id: trustor_id.clone(),
+                pool_id: PoolId(Hash(p1_bytes)),
+            },
+        },
+        ExpectedEntry {
+            key: keys[4].clone(),
+            identity: ExpectedEntryIdentity::PoolShare {
+                account_id: trustor_id,
+                pool_id: PoolId(Hash(p2_bytes)),
+            },
+        },
+    ];
 
     println!("--- Step 1: Live Soroban RPC Network Capture ---");
     println!("Endpoint: {}", endpoint);
     println!("Querying 5 known ledger keys via getLedgerEntries...");
 
-    match fetch_live_rpc_entries(endpoint, &keys) {
-        Ok((latest_ledger, entries)) => {
-            println!(
-                "  [LIVE] RPC response received successfully at live tip ledger: {}",
-                latest_ledger
-            );
-            println!(
-                "  [LIVE] Entries returned in single batch: {}",
-                entries.len()
-            );
-            assert_eq!(
-                entries.len(),
-                5,
-                "All 5 requested keys must be returned in live batch"
-            );
-
-            // Decode credit trustline from live network response
-            let credit_tl_entry = &entries[2];
-            let entry_data = LedgerEntryData::from_xdr_base64(&credit_tl_entry.xdr, Limits::none())
-                .expect("decode live trustline XDR");
-
-            if let LedgerEntryData::Trustline(tl) = entry_data {
-                assert_eq!(
-                    tl.flags, 1,
-                    "Live credit trustline must be AUTHORIZED (flags=1)"
-                );
-                let use_count = match tl.ext {
-                    TrustLineEntryExt::V1(v1) => match v1.ext {
-                        TrustLineEntryV1Ext::V2(v2) => v2.liquidity_pool_use_count,
-                        _ => panic!("Missing V2 extension on live credit trustline"),
-                    },
-                    _ => panic!("Missing V1 extension on live credit trustline"),
-                };
-                assert_eq!(
-                    use_count, 2,
-                    "Live on-chain liquidityPoolUseCount must equal exactly 2"
+    let live_status = match fetch_live_rpc_entries(endpoint, &keys) {
+        Ok(rpc) => match verify_live_observation(&rpc, &keys, &expected_entries) {
+            Ok(()) => {
+                println!(
+                    "  [LIVE] RPC response received successfully at live tip ledger: {}",
+                    rpc.latest_ledger
                 );
                 println!(
-                    "  [LIVE] Decoded live TrustLineEntryExtensionV2.liquidityPoolUseCount: {}",
-                    use_count
+                    "  [LIVE] Entries returned in single batch: {}",
+                    rpc.entries.len()
                 );
-                println!(
-                    "  [LIVE] Credit trustline lastModifiedLedgerSeq: {}",
-                    credit_tl_entry.last_modified_ledger_seq
-                );
-            } else {
-                panic!("Expected Trustline entry from RPC");
+                "LIVE_OBSERVED_AT_CURRENT_TIP"
             }
-
-            println!("  [LIVE CONSISTENCY GUARANTEE]");
-            println!(
-                "    - Atomic snapshot is guaranteed across keys in this batch ONLY at latestLedger ({}).",
-                latest_ledger
-            );
-            println!("    - RPC getLedgerEntries does NOT support historical ledger queries.");
-            println!(
-                "    - Historical point-in-time consistency at an arbitrary past ledger is unproven via RPC."
-            );
-        }
+            Err(error) => {
+                println!("  [LIVE VERIFICATION UNAVAILABLE]: {}", error);
+                "LIVE_UNAVAILABLE"
+            }
+        },
         Err(err) => {
             println!("  [NETWORK SKIPPED / UNAVAILABLE]: {}", err);
-            println!("  (Proceeding with recorded fixture for offline deterministic verification)");
+            println!("  [OFFLINE REPLAY MAY PROCEED INDEPENDENTLY]");
+            "LIVE_UNAVAILABLE"
         }
-    }
+    };
 
-    println!("\n--- Step 2: Bounded Feasibility Snapshot Evaluation ---");
+    println!("\n--- Step 2: Offline Replay of Recorded Fixture ---");
     let fixture_bytes = include_bytes!("../fixtures/live-testnet-discovery.json");
     let snapshot: Snapshot =
         serde_json::from_slice(fixture_bytes).expect("deserializing recorded testnet fixture");
@@ -420,6 +576,11 @@ fn main() {
     }
 
     println!("\n============================================================");
+    println!("     LIVE STATUS: {}", live_status);
+    println!(
+        "     OFFLINE REPLAY STATUS: COMPLETED (recorded ledger {})",
+        snapshot.ledger_sequence
+    );
     println!("     FEASIBILITY VERDICT: PLAUSIBLE BUT UNPROVEN            ");
     println!("============================================================");
     println!("Summary:");
@@ -434,4 +595,55 @@ fn main() {
         "     - Point-in-time historical discovery without external trust requires Captive Core."
     );
     println!("============================================================\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn response_entry(key: &str) -> RpcEntry {
+        RpcEntry {
+            key: key.to_owned(),
+            xdr: "AA==".to_owned(),
+            last_modified_ledger_seq: 1,
+        }
+    }
+
+    #[test]
+    fn reordered_entries_are_indexed_by_exact_key() {
+        let requested = vec!["account".to_owned(), "trustline".to_owned(), "pool".to_owned()];
+        let entries = vec![
+            response_entry("pool"),
+            response_entry("account"),
+            response_entry("trustline"),
+        ];
+        let indexed = index_response_entries(&requested, &entries).expect("valid response");
+        assert_eq!(indexed.get("account").unwrap().key, "account");
+        assert_eq!(indexed.get("trustline").unwrap().key, "trustline");
+        assert_eq!(indexed.get("pool").unwrap().key, "pool");
+    }
+
+    #[test]
+    fn missing_entry_is_rejected() {
+        let requested = vec!["account".to_owned(), "trustline".to_owned()];
+        let entries = vec![response_entry("account")];
+        let error = index_response_entries(&requested, &entries).unwrap_err();
+        assert!(error.contains("missing requested ledger key"));
+    }
+
+    #[test]
+    fn duplicate_entry_is_rejected() {
+        let requested = vec!["account".to_owned()];
+        let entries = vec![response_entry("account"), response_entry("account")];
+        let error = index_response_entries(&requested, &entries).unwrap_err();
+        assert!(error.contains("duplicate ledger key"));
+    }
+
+    #[test]
+    fn unexpected_entry_is_rejected() {
+        let requested = vec!["account".to_owned()];
+        let entries = vec![response_entry("unexpected")];
+        let error = index_response_entries(&requested, &entries).unwrap_err();
+        assert!(error.contains("unexpected ledger key"));
+    }
 }
