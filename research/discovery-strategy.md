@@ -53,14 +53,16 @@ Return `INCONCLUSIVE`, never `UNVERIFIED_FORECAST` or `SUPPORTED_SAFE`, when any
 - active sponsorship operations are omitted or their order cannot be established;
 - network, protocol version, or XDR branch is unsupported.
 
-The current repository implements and evaluates the Phase 1B two-tier discovery verification:
+The current repository demonstrates a bounded Phase 1B two-tier discovery-verification shape:
 - The target credit trustline's `liquidityPoolUseCount` is checked against discovered pool-share trustlines.
 - Pool IDs are cryptographically derived from canonical constant-product parameters (`derive_constant_product_pool_id`).
-- Feasibility is evaluated using an offline recorded network-response fixture ([`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json)) and executable verification demonstration ([`examples/live_discovery.rs`](../examples/live_discovery.rs)) representing Stellar Testnet ledger 5413920, with live network completeness explicitly classified as unproven.
+- A bounded live RPC observation checks a caller-selected set of exact keys at the current tip; response order is irrelevant, and missing, duplicate, unexpected, malformed, or contradictory entries are refused.
+- Separately, an offline recorded network-response fixture ([`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json)) is replayed at Stellar Testnet ledger 5413920 by the executable demonstration ([`examples/live_discovery.rs`](../examples/live_discovery.rs)). The live observation is never combined with that historical fixture into one verified snapshot.
+- Full candidate enumeration is not implemented, and historical ledger consistency is not proven. If the live request fails, live status is unavailable while offline replay remains an independent research result.
 - Deep research findings are documented in:
   - [`authoritative-core-discovery.md`](authoritative-core-discovery.md): Stellar Core internal discovery mechanics and protocol invariants.
   - [`discovery-architectures.md`](discovery-architectures.md): Comparison of RPC, Horizon, Captive Core, and Indexers.
   - [`selected-architecture.md`](selected-architecture.md): Two-Tier Verifiable Discovery Architecture and mathematical completeness proof.
   - [`discovery-feasibility-proof.md`](discovery-feasibility-proof.md): Recorded network fixture evaluation, live RPC constraints, and failure invariants.
 
-Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`. Live network completeness remains classified as **PLAUSIBLE BUT UNPROVEN**.
+Synthetic fixtures and caller-supplied `LedgerCapture` metadata continue to produce at most `UNVERIFIED_FORECAST`, never `SUPPORTED_SAFE`. Any count discrepancy, mixed ledger, or omission fails closed as `INCONCLUSIVE`. No actual revocation transaction was executed. Live discovery feasibility remains **PLAUSIBLE BUT UNPROVEN**, and Phase 2 remains blocked.

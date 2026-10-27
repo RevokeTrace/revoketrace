@@ -11,12 +11,14 @@ To prevent any ambiguity, the evidence in this repository is strictly categorize
 
 | Category | Actual Evidence in Repository | Boundary / Limitation |
 | --- | --- | --- |
-| **Live Network Observations** | Explicit curl / JSON-RPC queries executed against `https://soroban-testnet.stellar.org`. | Can observe live state at current tip only (`latestLedger`); cannot query arbitrary historical ledgers. |
-| **Stored Network-Response Fixtures** | [`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json). | Snapshot of actual XDR responses captured from Testnet at ledger 5413920, replayed offline. |
+| **Live Network Observations** | A bounded JSON-RPC query whose returned entries are matched to the exact requested keys and checked for expected XDR identities/types. | Observes only the current tip; it does not enumerate all candidate pool-share trustlines or establish historical completeness. A failed or contradictory query is `LIVE_UNAVAILABLE`, not a successful demonstration. |
+| **Stored Network-Response Fixtures** | [`fixtures/live-testnet-discovery.json`](../fixtures/live-testnet-discovery.json). | Snapshot of actual XDR responses captured from Testnet at ledger 5413920, replayed offline. It is never combined with the current-tip live observation into one verified snapshot. |
 | **Synthetic Test Fixtures** | Existing unit fixtures in `fixtures/cap0038/`. | Hand-crafted models of edge cases (reserve arithmetic, sponsorship ordering). |
 | **Proposed Revocation Forecasts** | `evaluate(&op, &snapshot)` in `src/lib.rs`. | **Offline preflight calculation only**. No transaction was signed, broadcast, or submitted to the Stellar network. |
 | **Actually Executed Transactions** | **None**. | No private keys or network mutation. No revocation transaction hash exists or is claimed. |
-| **Completeness Status** | **PLAUSIBLE BUT UNPROVEN**. | Mathematical proof holds for consistent snapshots; live historical completeness is unproven on public RPC. |
+| **Live status** | **OBSERVED AT CURRENT TIP** only when the bounded request validates; otherwise **UNAVAILABLE**. | The live result is an observation of named keys, not proof that every affected position was discovered. |
+| **Offline replay status** | **COMPLETED** for the recorded fixture at ledger 5413920. | This is deterministic replay of caller-supplied historical evidence, not independent proof of ledger completeness. |
+| **Completeness Status** | **PLAUSIBLE BUT UNPROVEN**. | Mathematical checks apply to a supplied consistent snapshot; full candidate enumeration and historical consistency remain unproven. |
 
 ---
 
@@ -52,6 +54,12 @@ The recorded network-response fixture captures a real multi-pool trustor state f
 ---
 
 ## 3. Live RPC Observations & Consistency Limitations
+
+The example reports two independent statuses: a current-tip bounded live observation and an
+offline replay of the stored ledger-5413920 fixture. It never treats the live response as
+verification of the historical fixture. If the live request fails, returns malformed JSON/XDR,
+or contains missing, duplicate, unexpected, or contradictory entries, live verification is
+reported as unavailable while the offline replay may still run independently.
 
 ### 3.1 Live Network Verification Command
 The target entries can be observed in real time on Stellar Testnet:
@@ -123,8 +131,9 @@ The evaluator strictly fails closed (returning `INCONCLUSIVE`) when:
 
 **DISCOVERY FEASIBILITY PLAUSIBLE BUT UNPROVEN**
 
-- **Why Plausible**: The on-chain `liquidityPoolUseCount` invariant in CAP-0038 and canonical pool parameter derivation provide a sound protocol-level mechanism to detect any omitted or spurious pool-share trustline on a given account.
+- **Why Plausible**: The on-chain `liquidityPoolUseCount` invariant in CAP-0038 and canonical pool parameter derivation provide a sound protocol-level counter check for a supplied candidate set. The counter invariant is supported by protocol research.
+- **What Was Demonstrated**: A bounded live RPC query can validate a caller-selected set of exact ledger keys, and the recorded fixture can be replayed deterministically at ledger 5413920.
 - **Why Unproven on Live Network**: Public Stellar RPC provides neither blind enumeration nor historical point-in-time consistency. Achieving complete discovery on live networks requires either:
   1. A single-batch live tip read (restricted to current state, max 200 keys), or
   2. Running a dedicated Captive-Core instance against history archives.
-- Neither option has been productionized in this spike. Therefore, claiming live discovery completeness is technically dishonest. The feasibility is **PLAUSIBLE BUT UNPROVEN**.
+- Full candidate enumeration is not implemented, historical ledger consistency is not proven, and no actual revocation transaction was executed. Neither option has been productionized in this spike. Therefore, claiming live discovery completeness is technically dishonest. Discovery feasibility is **PLAUSIBLE BUT UNPROVEN**, and Phase 2 remains blocked.
