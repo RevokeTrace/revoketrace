@@ -15,7 +15,7 @@ This is a deterministic protocol-impact analysis problem, not issuer risk scorin
 - The affected pool-share set only when the input is complete and its source-completeness evidence is trustworthy.
 - Per-pool integer redemption amounts, zero/one/two output count, trustline deletion, pool-entry deletion, and reserve-unit deltas.
 - Claimable-balance preimage fields when operation source, sequence, operation index, pool ID, and asset are present.
-- Known protocol failure classes when the relevant account balances, reserve counters, sponsorship relations, and limits are present.
+- Known protocol failure classes when the relevant account balances, reserve counters, sponsorship relations, limits, pool ordering, and protocol version are present. A normal sponsor path is not equivalent to an active sponsorship-sandwich path: current core deliberately reuses the released pool-share reserve in the former.
 
 ## What remains conditional or unknown
 
@@ -43,4 +43,5 @@ Stop Phase 1 and report `STOP` if source inspection finds a materially equivalen
 - CAP-0035: https://github.com/stellar/stellar-protocol/blob/master/core/cap-0035.md, accessed 2026-10-27.
 - CAP-0046-06: https://github.com/stellar/stellar-protocol/blob/master/core/cap-0046-06.md, accessed 2026-10-27.
 - Drips Stellar Wave repository directory: https://www.drips.network/wave/stellar/repos, accessed 2026-10-27. The directory reports 843 approved repositories but is not a proof that no equivalent exists; direct search results were limited.
-- GrantFox public contributor site: https://contribute.grantfox.xyz/, accessed 2026-10-27. The listing was not machine-verifiable in this spike; treat GrantFox equivalence/eligibility as unverified.
+- GrantFox public contributor site: https://contribute.grantfox.xyz/, accessed 2026-10-27. The site returned HTTP 403 to the research fetcher; treat GrantFox equivalence/eligibility as unverified.
+- `rs-stellar-xdr` releases: https://github.com/stellar/rs-stellar-xdr/releases, accessed 2026-10-27. The current visible latest is 30.0.0, so the repository's 28.0.1 pin is not current.

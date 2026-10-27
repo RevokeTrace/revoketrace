@@ -18,3 +18,7 @@ No private keys, signing, transaction construction, broadcasting, automatic repa
 ## Safety boundary
 
 The engine must fail closed. `SUPPORTED_SAFE` is a forecast against a complete, coherent snapshot and never means that the network will accept, include, or preserve the operation. Missing pool discovery, missing sponsorship context, stale/mixed-ledger data, wrong network, unsupported protocol version, or unvalidated result mappings must not produce SAFE.
+
+## Phase 1 status
+
+The repository currently contains a deliberately small XDR decoder and offline evaluator as a feasibility spike. It is not yet the Phase 2 engine: it does not prove complete pool-share discovery, model every Classic ledger entry or sponsorship-sandwich transition, compute exact claimable-balance IDs, or validate all network result mappings. The pinned `stellar-xdr` 28.0.1 dependency is a baseline; the official release page currently shows 30.0.0, pending compatibility review.
