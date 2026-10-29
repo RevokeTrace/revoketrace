@@ -14,8 +14,10 @@ use stellar_xdr::{
     SetTrustLineFlagsOp, SetTrustLineFlagsResultCode, Uint256, WriteXdr,
 };
 
+pub mod cli;
 pub mod discovery;
 pub mod evidence;
+pub mod report;
 pub use discovery::{
     CurlTransport, DiscoveryError, DiscoveryPipeline, HorizonAccountResponse, HorizonBalance,
     HttpTransport, MockTransport, decode_account_id, encode_account_id,
