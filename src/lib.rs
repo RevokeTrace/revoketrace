@@ -402,6 +402,12 @@ fn minimum_balance(account: &AccountState, base_reserve: u64) -> Result<u128, St
 }
 
 fn forecast_amount(shares: u64, reserve: u64, total: u64) -> Result<u64, String> {
+    // stellar-core only computes a withdrawal when the pool-share trustline
+    // balance is non-zero, so an unfunded pool (total shares of zero) is valid
+    // for a zero-balance trustline.
+    if shares == 0 {
+        return Ok(0);
+    }
     if total == 0 {
         return Err("pool total shares is zero".to_owned());
     }
@@ -3312,6 +3318,51 @@ mod tests {
             "expected a contradictory-evidence error, got: {:?}",
             report.errors
         );
+    }
+
+    #[test]
+    fn zero_balance_pool_share_trustline_in_empty_pool_is_not_inconclusive() {
+        // stellar-core removeOffersAndPoolShareTrustLines only calls
+        // getPoolWithdrawalAmount when the pool-share trustline balance is
+        // non-zero, so a zero-balance trustline in a pool whose
+        // totalPoolShares is also zero (a pool created by ChangeTrust and
+        // never funded) is redeemed without dividing by the pool total.
+        let mut snap = snapshot(None, true);
+        {
+            let pool = &mut snap.pool_share_trustlines[0];
+            pool.reserve_a = 0;
+            pool.reserve_b = 0;
+            pool.total_pool_shares = 0;
+            pool.owner_pool_shares = 0;
+            pool.pool_shares_trust_line_count = Some(1);
+        }
+        let report = evaluate(&revoke(), &snap);
+        assert_eq!(
+            report.classification,
+            Classification::UnverifiedForecast,
+            "errors: {:?}",
+            report.errors
+        );
+        assert_eq!(report.pool_redemptions.len(), 1);
+        assert_eq!(report.pool_redemptions[0].withdrawn_a_stroops, 0);
+        assert_eq!(report.pool_redemptions[0].withdrawn_b_stroops, 0);
+        assert!(report.pool_redemptions[0].claimable_balances.is_empty());
+        assert_eq!(report.pool_redemptions[0].pool_will_be_deleted, Some(true));
+        assert_eq!(report.account_deltas[0].subentries, -2);
+    }
+
+    #[test]
+    fn non_zero_shares_in_a_pool_with_zero_total_remain_inconclusive() {
+        let mut snap = snapshot(None, true);
+        {
+            let pool = &mut snap.pool_share_trustlines[0];
+            pool.reserve_a = 0;
+            pool.reserve_b = 0;
+            pool.total_pool_shares = 0;
+            pool.owner_pool_shares = 1;
+        }
+        let report = evaluate(&revoke(), &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
     }
 
     #[test]
