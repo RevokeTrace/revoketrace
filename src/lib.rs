@@ -1304,7 +1304,10 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     }
 
     let mut all_errors = eval_errors;
-    let classification = if !invalid_counter_errors.is_empty() {
+    // A modeled blocker is only definitive when every other part of the
+    // evaluation completed; otherwise the evidence is incomplete or
+    // contradictory and the result must fail closed.
+    let classification = if !invalid_counter_errors.is_empty() || !all_errors.is_empty() {
         all_errors.extend(invalid_counter_errors);
         all_errors.extend(blocked_errors);
         Classification::Inconclusive
@@ -1326,8 +1329,6 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         } else {
             Classification::SupportedBlocked
         }
-    } else if !all_errors.is_empty() {
-        Classification::Inconclusive
     } else {
         Classification::UnverifiedForecast
     };
@@ -3362,6 +3363,41 @@ mod tests {
             pool.owner_pool_shares = 1;
         }
         let report = evaluate(&revoke(), &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+    }
+
+    #[test]
+    fn evaluation_errors_take_precedence_over_a_modeled_blocker() {
+        // The replacement sponsor cannot afford the new claimable balances,
+        // which would be a modeled blocker, but the supplied transaction
+        // source is not a valid StrKey. Evidence that cannot be evaluated must
+        // not be reported as a definitive SUPPORTED_BLOCKED result.
+        let mut snap = snapshot(None, true);
+        snap.accounts[3].balance_stroops = 0;
+        snap.sponsorship_handoffs.push(SponsorshipHandoff {
+            sponsored_account: "holder".to_owned(),
+            replacement_sponsor: "replacement".to_owned(),
+            begin_operation_index: 0,
+            revoke_operation_index: 1,
+            end_operation_index: Some(2),
+        });
+        let mut op = revoke();
+        op.operation_index = Some(1);
+        op.tx_source_account = Some("holder".to_owned());
+        let report = evaluate(&op, &snap);
+        assert!(
+            report.errors.iter().any(|e| e.contains("below reserve")),
+            "the blocker must still be reported: {:?}",
+            report.errors
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("invalid transaction source account strkey")),
+            "{:?}",
+            report.errors
+        );
         assert_eq!(report.classification, Classification::Inconclusive);
     }
 
