@@ -7,6 +7,8 @@
 //! All failures fail closed as `Inconclusive`.
 
 use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::process::{Command, Stdio};
 use stellar_xdr::{
     AccountEntryExt, AccountEntryExtensionV1Ext, AccountId, AlphaNum4, AlphaNum12, Asset,
     AssetCode4, AssetCode12, Hash, LedgerEntryData, LedgerKey, LedgerKeyAccount,
@@ -277,16 +279,61 @@ pub struct CurlTransport {
     pub timeout_secs: u32,
 }
 
+const MAX_HTTP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 impl CurlTransport {
     pub fn new(timeout_secs: u32) -> Self {
         Self { timeout_secs }
     }
 }
 
+fn collect_curl_output(mut command: Command, action: &str) -> Result<String, DiscoveryError> {
+    command.stdout(Stdio::piped());
+    let mut child = command.spawn().map_err(|error| {
+        DiscoveryError::TransportError(format!("curl {} failed to start: {}", action, error))
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        DiscoveryError::TransportError(format!("curl {} did not provide stdout", action))
+    })?;
+    let mut bytes = Vec::new();
+    let read_result = stdout
+        .take((MAX_HTTP_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes);
+    if let Err(error) = read_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(DiscoveryError::TransportError(format!(
+            "curl {} response read failed: {}",
+            action, error
+        )));
+    }
+    if bytes.len() > MAX_HTTP_RESPONSE_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(DiscoveryError::TransportError(format!(
+            "curl {} response exceeds the {}-byte limit",
+            action, MAX_HTTP_RESPONSE_BYTES
+        )));
+    }
+    let status = child.wait().map_err(|error| {
+        DiscoveryError::TransportError(format!("curl {} wait failed: {}", action, error))
+    })?;
+    if !status.success() {
+        return Err(DiscoveryError::TransportError(format!(
+            "curl {} exited with status {}",
+            action, status
+        )));
+    }
+    String::from_utf8(bytes).map_err(|error| {
+        DiscoveryError::ParseError(format!("invalid UTF-8 in response: {}", error))
+    })
+}
+
 impl HttpTransport for CurlTransport {
     fn post(&self, url: &str, body: &str) -> Result<String, DiscoveryError> {
         let timeout_str = self.timeout_secs.to_string();
-        let output = std::process::Command::new("curl")
+        let mut command = Command::new("curl");
+        command
             .arg("-s")
             .arg("-X")
             .arg("POST")
@@ -298,23 +345,14 @@ impl HttpTransport for CurlTransport {
             .arg("--max-time")
             .arg(&timeout_str)
             .arg("-d")
-            .arg(body)
-            .output()
-            .map_err(|e| DiscoveryError::TransportError(format!("curl post failed: {}", e)))?;
-
-        if !output.status.success() {
-            return Err(DiscoveryError::TransportError(format!(
-                "curl post exited with status {}",
-                output.status
-            )));
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|e| DiscoveryError::ParseError(format!("invalid UTF-8 in response: {}", e)))
+            .arg(body);
+        collect_curl_output(command, "post")
     }
 
     fn get(&self, url: &str) -> Result<String, DiscoveryError> {
         let timeout_str = self.timeout_secs.to_string();
-        let output = std::process::Command::new("curl")
+        let mut command = Command::new("curl");
+        command
             .arg("-s")
             .arg("-X")
             .arg("GET")
@@ -322,18 +360,8 @@ impl HttpTransport for CurlTransport {
             .arg("-H")
             .arg("User-Agent: RevokeTrace-Discovery/0.1.0")
             .arg("--max-time")
-            .arg(&timeout_str)
-            .output()
-            .map_err(|e| DiscoveryError::TransportError(format!("curl get failed: {}", e)))?;
-
-        if !output.status.success() {
-            return Err(DiscoveryError::TransportError(format!(
-                "curl get exited with status {}",
-                output.status
-            )));
-        }
-        String::from_utf8(output.stdout)
-            .map_err(|e| DiscoveryError::ParseError(format!("invalid UTF-8 in response: {}", e)))
+            .arg(&timeout_str);
+        collect_curl_output(command, "get")
     }
 }
 

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, phase1-evidence-completion]
+    branches: [main, milestone5-cli-reports]
   pull_request:
 
 jobs:
@@ -16,4 +16,5 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo test --locked
+      - run: cargo build --locked --bin revoketrace
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings

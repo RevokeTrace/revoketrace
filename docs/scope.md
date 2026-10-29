@@ -1,5 +1,7 @@
 # RevokeTrace scope
 
+The production CLI and report reference is [docs/cli.md](cli.md). This document remains the engine scope and protocol-boundary record.
+
 RevokeTrace is a read-only preflight engine for Stellar Classic issuer authorization changes. Phase 1 establishes the protocol boundary and feasibility; later phases may implement the engine and CLI only if this gate remains valid.
 
 ## In scope for the MVP
