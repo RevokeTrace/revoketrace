@@ -10,6 +10,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(test)]
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
+
 use serde_json::Value;
 
 use crate::evidence::{AuthoritativeCaptureArtifact, EvidenceClassification};
@@ -34,6 +37,30 @@ const MAX_COLLECTION_ITEMS: usize = 10_000;
 const MAX_NETWORK_PASSPHRASE_BYTES: usize = 256;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+
+#[cfg(test)]
+static TEST_INSTALL_BARRIER: OnceLock<Mutex<Option<Arc<Barrier>>>> = OnceLock::new();
+
+#[cfg(test)]
+fn test_install_barrier_slot() -> &'static Mutex<Option<Arc<Barrier>>> {
+    TEST_INSTALL_BARRIER.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_test_install_barrier(barrier: Option<Arc<Barrier>>) {
+    *test_install_barrier_slot().lock().unwrap() = barrier;
+}
+
+#[cfg(test)]
+fn wait_for_test_install_barrier() {
+    let barrier = test_install_barrier_slot().lock().unwrap().clone();
+    if let Some(barrier) = barrier {
+        barrier.wait();
+    }
+}
+
+#[cfg(not(test))]
+fn wait_for_test_install_barrier() {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
@@ -706,13 +733,6 @@ fn validate_output_path(path: &Path) -> Result<(), CliError> {
     if path.file_name().is_none() {
         return Err(CliError::invalid("output path must name a file"));
     }
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && metadata.file_type().is_symlink()
-    {
-        return Err(CliError::invalid(
-            "refusing to write through a symbolic-link output path",
-        ));
-    }
     Ok(())
 }
 
@@ -1083,10 +1103,32 @@ fn emit_document(report: &ReportDocument, output: &OutputOptions) -> Result<(), 
 fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> {
     validate_output_path(path)?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let metadata = fs::metadata(parent).map_err(|error| CliError {
+    let parent_metadata = fs::symlink_metadata(parent).map_err(|error| CliError {
         code: EXIT_OUTPUT,
         message: format!(
             "cannot access output directory '{}': {}",
+            parent.display(),
+            error
+        ),
+    })?;
+    if parent_metadata.file_type().is_symlink() {
+        return Err(CliError {
+            code: EXIT_OUTPUT,
+            message: "refusing to write through a symbolic-link output directory".to_owned(),
+        });
+    }
+    let parent = fs::canonicalize(parent).map_err(|error| CliError {
+        code: EXIT_OUTPUT,
+        message: format!(
+            "cannot resolve output directory '{}': {}",
+            parent.display(),
+            error
+        ),
+    })?;
+    let metadata = fs::symlink_metadata(&parent).map_err(|error| CliError {
+        code: EXIT_OUTPUT,
+        message: format!(
+            "cannot access resolved output directory '{}': {}",
             parent.display(),
             error
         ),
@@ -1097,19 +1139,33 @@ fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> 
             message: format!("output parent '{}' is not a directory", parent.display()),
         });
     }
-    if let Ok(existing) = fs::symlink_metadata(path) {
-        if existing.file_type().is_symlink() {
-            return Err(CliError {
-                code: EXIT_OUTPUT,
-                message: "refusing to overwrite a symbolic-link output path".to_owned(),
-            });
+    let install_path = parent.join(path.file_name().expect("validated output filename"));
+    match fs::symlink_metadata(&install_path) {
+        Ok(existing) => {
+            if existing.file_type().is_symlink() {
+                return Err(CliError {
+                    code: EXIT_OUTPUT,
+                    message: "refusing to overwrite a symbolic-link output path".to_owned(),
+                });
+            }
+            if !force {
+                return Err(CliError {
+                    code: EXIT_OUTPUT,
+                    message: format!(
+                        "refusing to overwrite existing file '{}'; pass --force to replace it",
+                        path.display()
+                    ),
+                });
+            }
         }
-        if !force {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
             return Err(CliError {
                 code: EXIT_OUTPUT,
                 message: format!(
-                    "refusing to overwrite existing file '{}'; pass --force to replace it",
-                    path.display()
+                    "cannot inspect output destination '{}': {}",
+                    path.display(),
+                    error
                 ),
             });
         }
@@ -1143,30 +1199,69 @@ fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> 
             }
         };
         if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(CliError {
-                code: EXIT_OUTPUT,
-                message: format!("cannot complete temporary report write: {}", error),
-            });
+            return Err(output_install_error(
+                &temp_path,
+                format!("cannot complete temporary report write: {}", error),
+            ));
         }
         drop(file);
-        if !force && fs::symlink_metadata(path).is_ok() {
-            let _ = fs::remove_file(&temp_path);
-            return Err(CliError {
-                code: EXIT_OUTPUT,
-                message: format!("output file '{}' appeared during write", path.display()),
-            });
-        }
-        if let Err(error) = fs::rename(&temp_path, path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(CliError {
-                code: EXIT_OUTPUT,
-                message: format!(
-                    "cannot atomically install report '{}': {}",
-                    path.display(),
-                    error
-                ),
-            });
+        wait_for_test_install_barrier();
+        if force {
+            match fs::symlink_metadata(&install_path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(output_install_error(
+                        &temp_path,
+                        "refusing to overwrite a symbolic-link output path".to_owned(),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(output_install_error(
+                        &temp_path,
+                        format!(
+                            "cannot inspect output destination '{}': {}",
+                            path.display(),
+                            error
+                        ),
+                    ));
+                }
+            }
+            if let Err(error) = fs::rename(&temp_path, &install_path) {
+                return Err(output_install_error(
+                    &temp_path,
+                    format!(
+                        "cannot atomically replace report '{}': {}",
+                        path.display(),
+                        error
+                    ),
+                ));
+            }
+        } else {
+            // `hard_link` creates the destination directory entry without
+            // replacing an existing entry. This is the final security
+            // decision for --force=false; the earlier existence check is only
+            // for a clearer fast-path error.
+            if let Err(error) = fs::hard_link(&temp_path, &install_path) {
+                return Err(output_install_error(
+                    &temp_path,
+                    format!(
+                        "cannot install report '{}' without replacing an existing destination: {}",
+                        path.display(),
+                        error
+                    ),
+                ));
+            }
+            if let Err(error) = fs::remove_file(&temp_path) {
+                return Err(CliError {
+                    code: EXIT_OUTPUT,
+                    message: format!(
+                        "report '{}' was installed but its temporary file could not be removed: {}",
+                        path.display(),
+                        error
+                    ),
+                });
+            }
         }
         return Ok(());
     }
@@ -1174,6 +1269,23 @@ fn write_atomic(path: &Path, bytes: &[u8], force: bool) -> Result<(), CliError> 
         code: EXIT_OUTPUT,
         message: "could not allocate a unique temporary report path".to_owned(),
     })
+}
+
+fn output_install_error(temp_path: &Path, message: String) -> CliError {
+    match fs::remove_file(temp_path) {
+        Ok(()) => CliError {
+            code: EXIT_OUTPUT,
+            message,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => CliError {
+            code: EXIT_OUTPUT,
+            message,
+        },
+        Err(error) => CliError {
+            code: EXIT_OUTPUT,
+            message: format!("{}; temporary file cleanup failed: {}", message, error),
+        },
+    }
 }
 
 fn report_cli_error(error: CliError) -> i32 {
@@ -1214,6 +1326,55 @@ mod tests {
     use super::*;
 
     const VALID_ACCOUNT: &str = "GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB";
+    static OUTPUT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn output_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        OUTPUT_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap()
+    }
+
+    fn test_output_dir(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "revoketrace-cli-{}-{}-{}",
+            label,
+            std::process::id(),
+            nonce
+        ));
+        fs::create_dir(&path).expect("unique test output directory");
+        path
+    }
+
+    fn assert_no_temporary_reports(dir: &Path) {
+        let leftovers = fs::read_dir(dir)
+            .expect("read test output directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".revoketrace-")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "temporary report files remain: {:?}",
+            leftovers
+        );
+    }
+
+    struct InstallBarrierReset;
+
+    impl Drop for InstallBarrierReset {
+        fn drop(&mut self) {
+            set_test_install_barrier(None);
+        }
+    }
 
     #[test]
     fn rejects_malformed_strkeys_and_asset_codes() {
@@ -1298,6 +1459,16 @@ mod tests {
         let json = String::from_utf8(first.json_bytes().unwrap()).unwrap();
         assert!(json.contains("UNVERIFIED_FORECAST"));
         assert!(!json.contains("SUPPORTED_SAFE"));
+
+        let mut wrong_version = first.clone();
+        wrong_version.schema_version += 1;
+        assert!(wrong_version.validate_schema().is_err());
+        let mut wrong_type = first.clone();
+        wrong_type.report_type = "other.report".to_owned();
+        assert!(wrong_type.validate_schema().is_err());
+        let mut altered = first;
+        altered.evidence.manifest_sha256 = "0".repeat(64);
+        assert!(altered.validate_schema().is_ok());
     }
 
     #[test]
@@ -1341,18 +1512,93 @@ mod tests {
 
     #[test]
     fn atomic_output_refuses_overwrite_and_supports_explicit_force() {
-        let path = std::env::temp_dir().join(format!(
-            "revoketrace-cli-test-{}-{}",
-            std::process::id(),
-            "output"
-        ));
+        let _lock = output_test_lock();
+        let dir = test_output_dir("overwrite");
+        let path = dir.join("report.json");
         fs::write(&path, b"old").unwrap();
         let error = write_atomic(&path, b"new", false).expect_err("overwrite must be refused");
         assert_eq!(error.code, EXIT_OUTPUT);
         assert_eq!(fs::read(&path).unwrap(), b"old");
         write_atomic(&path, b"new", true).expect("explicit force should replace atomically");
         assert_eq!(fs::read(&path).unwrap(), b"new");
-        let _ = fs::remove_file(path);
+        assert_no_temporary_reports(&dir);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn successful_installation_writes_complete_content() {
+        let _lock = output_test_lock();
+        let dir = test_output_dir("complete");
+        let path = dir.join("report.json");
+        let content = b"complete deterministic report bytes\n";
+        write_atomic(&path, content, false).expect("report installation");
+        assert_eq!(fs::read(&path).unwrap(), content);
+        assert_no_temporary_reports(&dir);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_no_force_installation_never_overwrites_destination() {
+        let _lock = output_test_lock();
+        let dir = test_output_dir("race");
+        let path = Arc::new(dir.join("report.json"));
+        let barrier = Arc::new(Barrier::new(2));
+        set_test_install_barrier(Some(barrier));
+        let _reset = InstallBarrierReset;
+
+        let (left, right) = std::thread::scope(|scope| {
+            let left_path = Arc::clone(&path);
+            let right_path = Arc::clone(&path);
+            let left = scope.spawn(move || write_atomic(&left_path, b"left", false));
+            let right = scope.spawn(move || write_atomic(&right_path, b"right", false));
+            (
+                left.join().expect("left installer thread"),
+                right.join().expect("right installer thread"),
+            )
+        });
+
+        let successes = usize::from(left.is_ok()) + usize::from(right.is_ok());
+        assert_eq!(successes, 1, "exactly one no-replace installer must win");
+        let failure = if left.is_err() { left } else { right };
+        assert_eq!(
+            failure.expect_err("one installer must fail").code,
+            EXIT_OUTPUT
+        );
+        let installed = fs::read(&*path).unwrap();
+        assert!(installed == b"left" || installed == b"right");
+        assert_no_temporary_reports(&dir);
+        drop(_reset);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_force_installation_preserves_destination_and_cleans_temp() {
+        let _lock = output_test_lock();
+        let dir = test_output_dir("failed");
+        let path = dir.join("report.json");
+        fs::create_dir(&path).unwrap();
+        let error = write_atomic(&path, b"new", true).expect_err("directory cannot be replaced");
+        assert_eq!(error.code, EXIT_OUTPUT);
+        assert!(path.is_dir());
+        assert_no_temporary_reports(&dir);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_destinations_are_rejected_without_following() {
+        let _lock = output_test_lock();
+        let dir = test_output_dir("symlink");
+        let real = dir.join("real.json");
+        let link = dir.join("report.json");
+        fs::write(&real, b"keep").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let error = write_atomic(&link, b"replace", true).expect_err("symlink must be rejected");
+        assert_eq!(error.code, EXIT_OUTPUT);
+        assert_eq!(fs::read(&real).unwrap(), b"keep");
+        assert_eq!(fs::read_link(&link).unwrap(), real);
+        assert_no_temporary_reports(&dir);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

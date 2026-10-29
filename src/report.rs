@@ -292,6 +292,9 @@ impl ReportDocument {
         Ok(bytes)
     }
 
+    /// Validates the supported report envelope only. This is not an
+    /// authenticity check: it does not verify provenance, recompute the
+    /// forecast, or certify that a transaction would succeed.
     pub fn validate_schema(&self) -> Result<(), String> {
         if self.schema_version != REPORT_SCHEMA_VERSION {
             return Err(format!(

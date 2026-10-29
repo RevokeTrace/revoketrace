@@ -49,9 +49,31 @@ The adapter uses Horizon only to enumerate candidates and uses a bounded, single
 
 Reads a versioned JSON report, validates its schema version/type, and displays its forecast classification, warnings, errors, reserve/sponsorship effects, and evidence limitations. It does not recompute the forecast or treat the report as a cryptographic certificate.
 
+Schema validation is an envelope check only. `inspect` does not authenticate the
+report, verify its provenance or manifest digest, promote caller-supplied evidence,
+recompute transaction safety, or approve a transaction. In particular,
+`UNVERIFIED_FORECAST` remains unverified when it is inspected.
+
 ## Output and file safety
 
-Text is the default output. Use `--format json` for the stable report schema below. `--output PATH` writes through a temporary file in the target directory, flushes it, and atomically installs it. Existing files and symbolic-link targets are rejected unless `--force` is supplied; symbolic-link output targets remain rejected. A failed write does not install a partial report. Paths containing `..` are rejected for output files. `--output -` writes to stdout.
+Text is the default output. Use `--format json` for the stable report schema below.
+`--output PATH` creates an exclusive temporary file in the destination directory,
+writes and flushes the complete report, and then installs it. Without `--force`,
+installation uses an atomic same-filesystem hard-link operation that cannot replace
+an existing directory entry; the earlier existence check is only a clearer error
+fast path. A destination created concurrently therefore wins and the report
+installation fails with exit code `60` rather than overwriting it. Filesystems that
+do not support hard links cannot be used for no-force report installation.
+
+With `--force`, an existing non-symbolic-link destination is replaced with an
+atomic same-directory rename. Pre-existing symbolic-link destinations and direct
+symbolic-link output directories are rejected, and rename never dereferences a
+symbolic-link destination. Portable standard-library APIs cannot make the
+non-symbolic-link check and forced replacement one conditional operation against a
+hostile process changing the path concurrently; the output directory must therefore
+be trusted when `--force` is used. A failed write or installation removes its
+temporary file and does not install a partial report. Paths containing `..` are
+rejected for output files. `--output -` writes to stdout.
 
 Endpoints reject credentials, query strings, fragments, whitespace, and control characters. Reports contain public account and evidence identifiers only; credential-bearing endpoints are rejected before report generation.
 

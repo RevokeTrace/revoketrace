@@ -4,6 +4,12 @@ RevokeTrace is a read-only Rust CLI and forecasting engine for Stellar Classic i
 
 The CLI documentation entry point is [docs/cli.md](docs/cli.md). It contains the command reference, versioned JSON schema, exit codes, security boundaries, and known limitations.
 
+Report files are written through an exclusively created, flushed temporary file.
+Without `--force`, the final installation is atomic and no-replace; an existing or
+concurrently created destination is never overwritten. `--force` permits replacement
+of a non-symbolic-link destination, subject to the trusted-output-directory race
+limitation documented in [docs/cli.md](docs/cli.md).
+
 ## Install and build
 
 The repository pins Rust in `rust-toolchain.toml`. From a checkout:
