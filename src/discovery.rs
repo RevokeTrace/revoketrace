@@ -2602,6 +2602,72 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // curl output handling: bounded reads and process failures
+    // -----------------------------------------------------------------------
+    #[cfg(unix)]
+    fn shell(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn curl_output_over_the_size_limit_is_rejected() {
+        let over = MAX_HTTP_RESPONSE_BYTES + 1;
+        let err =
+            collect_curl_output(shell(&format!("head -c {} /dev/zero", over)), "get").unwrap_err();
+        match err {
+            DiscoveryError::TransportError(message) => {
+                assert!(message.contains("exceeds the"), "{}", message)
+            }
+            other => panic!("unexpected error {:?}", other),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn curl_output_exactly_at_the_size_limit_is_accepted() {
+        let body = collect_curl_output(
+            shell(&format!("head -c {} /dev/zero", MAX_HTTP_RESPONSE_BYTES)),
+            "get",
+        )
+        .expect("response at the limit");
+        assert_eq!(body.len(), MAX_HTTP_RESPONSE_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn curl_nonzero_exit_discards_partial_output() {
+        let err = collect_curl_output(shell("printf partial; exit 7"), "post").unwrap_err();
+        match err {
+            DiscoveryError::TransportError(message) => {
+                assert!(message.contains("exited with status"), "{}", message)
+            }
+            other => panic!("unexpected error {:?}", other),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn curl_output_that_is_not_utf8_is_a_parse_error() {
+        let err = collect_curl_output(shell("printf '\\377\\376'"), "get").unwrap_err();
+        assert!(matches!(err, DiscoveryError::ParseError(_)), "{:?}", err);
+    }
+
+    #[test]
+    fn missing_curl_binary_is_a_transport_error() {
+        let err =
+            collect_curl_output(Command::new("/nonexistent/revoketrace-curl"), "get").unwrap_err();
+        match err {
+            DiscoveryError::TransportError(message) => {
+                assert!(message.contains("failed to start"), "{}", message)
+            }
+            other => panic!("unexpected error {:?}", other),
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Test 13: Stale indexer data (deleted pool on-chain)
     // -----------------------------------------------------------------------
     #[test]
