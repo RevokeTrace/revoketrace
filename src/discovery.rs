@@ -179,6 +179,10 @@ pub enum DiscoveryError {
         minimum: u32,
         maximum: u32,
     },
+    InconsistentProtocolVersion {
+        rpc: u32,
+        header: u32,
+    },
     MissingReserveConfiguration(String),
     IncorrectNetworkPassphrase {
         expected: String,
@@ -249,6 +253,11 @@ impl std::fmt::Display for DiscoveryError {
                 f,
                 "unsupported protocol version: {} is outside the reviewed range {} to {}",
                 version, minimum, maximum
+            ),
+            Self::InconsistentProtocolVersion { rpc, header } => write!(
+                f,
+                "inconsistent protocol version: RPC reported {} but the ledger header says {}",
+                rpc, header
             ),
             Self::MissingReserveConfiguration(s) => {
                 write!(f, "missing reserve configuration: {}", s)

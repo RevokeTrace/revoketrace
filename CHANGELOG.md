@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Protocol policy: versions 18 to 29 are evaluated and any other version is refused as `UNSUPPORTED` (exit code 30), in offline, live, and stored-capture paths. v1.0.0 only enforced the lower bound. A snapshot without a protocol version now carries the warning `W_PROTOCOL_UNVERIFIED`. Rationale and evidence: [protocol support decision](research/protocol-support-decision.md).
+- Protocol policy: versions 18 to 29 are evaluated and any other version is refused as `UNSUPPORTED` (exit code 30), in offline, live, and stored-capture paths. v1.0.0 only enforced the lower bound. A snapshot without a protocol version now carries the warning `W_PROTOCOL_UNVERIFIED`. The live adapter checks the RPC-reported version before decoding the header and requires the decoded header version to agree. Rationale and evidence: [protocol support decision](research/protocol-support-decision.md).
 
 ## 1.0.0 (published)
 
