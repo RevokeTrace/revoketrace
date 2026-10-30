@@ -28,7 +28,7 @@ use crate::discovery::{
 use crate::{
     AccountState, CreditAsset, CreditTrustlineState, DiscoveryCoverage, DiscoveryProof,
     DiscoverySource, PoolShareState, Snapshot, derive_constant_product_pool_id,
-    discovery_manifest_sha256,
+    discovery_manifest_sha256, protocol,
 };
 
 /// Strict classifications for ledger evidence in RevokeTrace.
@@ -92,6 +92,19 @@ pub struct LatestLedgerResponse {
 // ---------------------------------------------------------------------------
 
 /// Decodes base64-encoded `headerXdr` into a `stellar_xdr::curr::LedgerHeader`.
+/// Applies the central protocol support policy to an observed version.
+fn check_protocol_version(version: u32) -> Result<(), DiscoveryError> {
+    if protocol::is_reviewed_protocol_version(version) {
+        Ok(())
+    } else {
+        Err(DiscoveryError::UnsupportedProtocolVersion {
+            version,
+            minimum: protocol::MIN_SUPPORTED_PROTOCOL_VERSION,
+            maximum: protocol::MAX_REVIEWED_PROTOCOL_VERSION,
+        })
+    }
+}
+
 pub fn decode_ledger_header(header_xdr: &str) -> Result<LedgerHeader, DiscoveryError> {
     LedgerHeader::from_xdr_base64(header_xdr, Limits::none()).map_err(|e| {
         DiscoveryError::ParseError(format!("failed to decode LedgerHeader XDR: {}", e))
@@ -483,12 +496,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             }
 
             let protocol_version = header.ledger_version;
-            if protocol_version < 18 {
-                return Err(DiscoveryError::UnsupportedProtocolVersion {
-                    version: protocol_version,
-                    minimum: 18,
-                });
-            }
+            check_protocol_version(protocol_version)?;
 
             let base_reserve_stroops = header.base_reserve as u64;
             if base_reserve_stroops == 0 {
@@ -548,12 +556,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         })?;
 
         let protocol_version = header.ledger_version;
-        if protocol_version < 18 {
-            return Err(DiscoveryError::UnsupportedProtocolVersion {
-                version: protocol_version,
-                minimum: 18,
-            });
-        }
+        check_protocol_version(protocol_version)?;
 
         let base_reserve_stroops = header.base_reserve as u64;
         if base_reserve_stroops == 0 {
@@ -1119,13 +1122,8 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
 
         // 4. Protocol Version
-        if let Some(proto) = snapshot.protocol_version
-            && proto < 18
-        {
-            return Err(DiscoveryError::UnsupportedProtocolVersion {
-                version: proto,
-                minimum: 18,
-            });
+        if let Some(proto) = snapshot.protocol_version {
+            check_protocol_version(proto)?;
         }
 
         // 5. Canonical Pool ID verification
@@ -2486,10 +2484,69 @@ mod tests {
             err,
             DiscoveryError::UnsupportedProtocolVersion {
                 version: 17,
-                minimum: 18
+                minimum: 18,
+                maximum: 29
             }
         ));
         assert_eq!(err.into_classification(), Classification::Unsupported);
+    }
+
+    #[test]
+    fn live_header_above_reviewed_protocol_range_is_unsupported() {
+        // Protocol 30 is the first version whose ledger header may use
+        // millisecond StellarValue arms the pinned decoder cannot parse; it is
+        // outside the reviewed range whether or not the header decodes.
+        for version in [
+            protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1,
+            protocol::MAX_REVIEWED_PROTOCOL_VERSION + 2,
+        ] {
+            let mut mock = MockTransport::new();
+            mock.set_get(
+                format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+                Ok(serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": [] }).to_string()),
+            );
+            mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": version, "sequence": 5000, "headerXdr": make_header_xdr(version, 5000, 5_000_000) }
+            }).to_string()));
+            let adapter = AuthoritativeEvidenceAdapter::new(
+                mock,
+                "https://horizon.example",
+                "https://rpc.example",
+                NETWORK_PASSPHRASE,
+            );
+            let err = adapter
+                .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    DiscoveryError::UnsupportedProtocolVersion {
+                        minimum: 18,
+                        maximum: 29,
+                        ..
+                    }
+                ),
+                "protocol {} produced {:?}",
+                version,
+                err
+            );
+            assert_eq!(err.into_classification(), Classification::Unsupported);
+        }
+    }
+
+    #[test]
+    fn stored_capture_with_unreviewed_protocol_is_refused_before_classification() {
+        let mut snapshot: Snapshot =
+            serde_json::from_slice(include_bytes!("../fixtures/live-testnet-discovery.json"))
+                .expect("fixture snapshot");
+        snapshot.protocol_version = Some(protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1);
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::UnsupportedProtocolVersion { version: 30, .. }
+        ));
     }
 
     #[test]
