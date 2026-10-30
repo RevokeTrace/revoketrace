@@ -6,6 +6,6 @@ It supports offline analysis of caller-supplied snapshots and bounded current-ti
 
 **A forecast is not transaction approval.** `UNVERIFIED_FORECAST` is an internally modeled result with unresolved evidence limitations. `SUPPORTED_SAFE` is not emitted.
 
-Start with [Getting started](getting-started.md), then read [Commands and reports](commands.md) and [Evidence and safety](evidence-and-safety.md).
+Start with [Getting started](getting-started.md), then read [Commands and reports](commands.md), [Architecture](architecture.md), and [Evidence and safety](evidence-and-safety.md). [Verification and reproducibility](verification.md) distinguishes tests from ledger evidence; [Contributing and security](contributing.md) and [Maintenance and releases](maintenance.md) explain how the project is maintained.
 
 [Source repository](https://github.com/RevokeTrace/revoketrace) · [Release notes](https://github.com/RevokeTrace/revoketrace/blob/main/CHANGELOG.md)

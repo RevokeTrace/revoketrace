@@ -12,6 +12,6 @@ RevokeTrace models Stellar Classic authorization changes using validated snapsho
 
 Known limitations include incomplete verification of full multi-operation sponsorship handoffs, lack of a live forced-redemption fixture covering every modeled effect, and no authoritative transaction-success preflight.
 
-For the exact protocol verification matrix and fixture provenance, see [Phase 4C protocol verification](https://github.com/RevokeTrace/revoketrace/blob/main/research/phase4c-protocol-verification.md). For scope, see [Scope](https://github.com/RevokeTrace/revoketrace/blob/main/docs/scope.md).
+For the exact protocol verification matrix and fixture provenance, see [Phase 4C protocol verification](https://github.com/RevokeTrace/revoketrace/blob/main/research/phase4c-protocol-verification.md). The [verification and reproducibility](verification.md) page distinguishes source review, tests, and external evidence. For scope, see [Scope](https://github.com/RevokeTrace/revoketrace/blob/main/docs/scope.md).
 
 RevokeTrace does not handle private keys, transaction signing, transaction construction, broadcasting, or automatic repair.
