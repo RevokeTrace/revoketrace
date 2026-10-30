@@ -39,7 +39,7 @@ For offline analysis, `execute_analyze` reads at most 8 MiB, deserializes a `Sna
 
 For live analysis, `execute_live` accepts only the Testnet passphrase and validated HTTPS endpoints. `AuthoritativeEvidenceAdapter::acquire_live_evidence` first uses Horizon to enumerate the caller's candidate balances, builds no more than 200 RPC ledger keys, then obtains a ledger header and the matching `getLedgerEntries` batch. It validates XDR, requested-key identity, pool IDs, sponsorship extensions, and the matching ledger sequence. If the ledger advances during capture it retries a bounded number of times; a persistent mismatch fails closed. The resulting observation is `BOUNDED_CURRENT_TIP_RPC`, not a full ledger export.
 
-`inspect` only deserializes a bounded report and calls `ReportDocument::validate_schema`. It preserves the saved classification and never treats a manifest, provenance label, or report body as authenticated ledger evidence.
+`inspect` only deserializes a bounded report and calls `ReportDocument::validate_schema`. It preserves the saved classification and never treats a manifest, provenance label, or report body as authenticated ledger evidence. Its text output uses a separate renderer (`render_human_inspection`) that opens with a not-verified notice and labels every copied value as a saved claim. Its JSON output stays the unchanged schema 1 document, with the same notice on standard error.
 
 ## Trust and authority boundaries
 
@@ -53,7 +53,7 @@ Evidence and forecast classifications are separate. A caller cannot make a snaps
 
 Reports use `schema_version: 1` and type `revoketrace.forecast`. They carry the requested operation, derived evidence status, modeled forecast, diagnostics, and limitations. Equivalent validated inputs serialize in deterministic order. The binary uses exit codes to distinguish successful command execution, warnings, inconclusive evidence, unsupported behavior, invalid input, network failure, output failure, and internal failure.
 
-Live mode is limited to Stellar Testnet and rejects observed protocol versions below 18. The code uses `stellar-xdr` 28.0.1. This is generated-XDR compatibility for the stated scope, not an assertion that future protocol or XDR releases are automatically supported. The source and test evidence is indexed in [verification](verification.md).
+Live mode is limited to Stellar Testnet. Every path applies one protocol policy (`src/protocol.rs`): protocol versions 18 to 29 are evaluated and any other observed version is refused as `UNSUPPORTED` (exit code 30). A snapshot with no protocol version is evaluated with the warning `W_PROTOCOL_UNVERIFIED`. The code uses `stellar-xdr` 28.0.1. This is generated-XDR compatibility for the stated scope, not an assertion that future protocol or XDR releases are automatically supported. The reasoning for the 18 to 29 range is in the [protocol support decision](../research/protocol-support-decision.md). The source and test evidence is indexed in [verification](verification.md).
 
 ## Current design boundaries
 

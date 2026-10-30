@@ -16,7 +16,10 @@ use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use serde_json::Value;
 
 use crate::evidence::{AuthoritativeCaptureArtifact, EvidenceClassification};
-use crate::report::{ReportClassification, ReportDocument, ReportMode, render_human};
+use crate::report::{
+    INSPECTION_JSON_NOTICE, ReportClassification, ReportDocument, ReportMode, render_human,
+    render_human_inspection,
+};
 use crate::{
     AuthoritativeEvidenceAdapter, Classification, CreditAsset, CurlTransport, DiscoveryError,
     DiscoverySource, OperationSpec, Report as EngineReport, Snapshot, classify_transition,
@@ -635,12 +638,16 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
             label
         )));
     }
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .ok_or_else(|| {
-            CliError::invalid(format!("{} endpoint must use http:// or https://", label))
-        })?;
+    let (rest, cleartext) = if let Some(rest) = value.strip_prefix("https://") {
+        (rest, false)
+    } else if let Some(rest) = value.strip_prefix("http://") {
+        (rest, true)
+    } else {
+        return Err(CliError::invalid(format!(
+            "{} endpoint must use https://",
+            label
+        )));
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.is_empty() || authority.contains('@') || authority.contains('%') {
         return Err(CliError::invalid(format!(
@@ -690,7 +697,19 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
             label
         )));
     }
+    // TLS is the only protection for RPC and Horizon responses, so cleartext
+    // HTTP is limited to a local endpoint such as a loopback proxy.
+    if cleartext && !is_loopback_host(host) {
+        return Err(CliError::invalid(format!(
+            "{} endpoint must use https:// unless it targets a loopback host",
+            label
+        )));
+    }
     Ok(())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    crate::discovery::is_loopback_host(host)
 }
 
 fn validate_port(label: &str, port: &str) -> Result<(), CliError> {
@@ -821,7 +840,16 @@ fn execute_inspect(request: InspectRequest) -> Result<i32, CliError> {
     let report: ReportDocument = serde_json::from_slice(&bytes)
         .map_err(|error| CliError::invalid(format!("report JSON is invalid: {}", error)))?;
     report.validate_schema().map_err(CliError::invalid)?;
-    emit_document(&report, &request.output)?;
+    let rendered = match request.output.format {
+        OutputFormat::Text => render_human_inspection(&report).into_bytes(),
+        OutputFormat::Json => {
+            eprintln!("{}", INSPECTION_JSON_NOTICE);
+            report.json_bytes().map_err(|error| {
+                CliError::internal(format!("cannot serialize JSON report: {}", error))
+            })?
+        }
+    };
+    emit_bytes(&rendered, &request.output)?;
     Ok(exit_code_for_classification(report.forecast.classification))
 }
 
@@ -1081,18 +1109,22 @@ fn emit_document(report: &ReportDocument, output: &OutputOptions) -> Result<(), 
             CliError::internal(format!("cannot serialize JSON report: {}", error))
         })?,
     };
+    emit_bytes(&bytes, output)
+}
+
+fn emit_bytes(bytes: &[u8], output: &OutputOptions) -> Result<(), CliError> {
     if let Some(path) = &output.output {
         if path.as_os_str() == "-" {
-            io::stdout().write_all(&bytes).map_err(|error| CliError {
+            io::stdout().write_all(bytes).map_err(|error| CliError {
                 code: EXIT_OUTPUT,
                 message: format!("cannot write report to stdout: {}", error),
             })?;
         } else {
-            write_atomic(path, &bytes, output.force)?;
+            write_atomic(path, bytes, output.force)?;
             eprintln!("report written to {}", path.display());
         }
     } else {
-        io::stdout().write_all(&bytes).map_err(|error| CliError {
+        io::stdout().write_all(bytes).map_err(|error| CliError {
             code: EXIT_OUTPUT,
             message: format!("cannot write report to stdout: {}", error),
         })?;
@@ -1306,13 +1338,13 @@ Usage:\n  revoketrace live --network-passphrase 'Test SDF Network ; September 20
 Live mode uses the existing bounded Horizon candidate enumeration and one-batch RPC evidence\nadapter. It does not prove complete ledger coverage or provide transaction signing/broadcasting."
         ),
         Some("inspect") => println!(
-            "Inspect a RevokeTrace JSON report\n\nUsage:\n  revoketrace inspect --report PATH [--format text|json] [--output PATH] [--force]"
+            "Display a saved RevokeTrace JSON report as unverified, caller-supplied data.\n\nThe file is not authenticated and the forecast is not recomputed. Use analyze or live on\nthe evidence itself to obtain a forecast.\n\nUsage:\n  revoketrace inspect --report PATH [--format text|json] [--output PATH] [--force]"
         ),
         Some(other) => println!("unknown help topic '{}'; use 'revoketrace help'", other),
         None => println!(
             "RevokeTrace {}\n\n\
 Read-only Stellar Classic authorization-revocation forecasts.\n\n\
-Commands:\n  analyze   Evaluate a validated local JSON snapshot (offline)\n  live      Acquire bounded Stellar Testnet evidence and evaluate it\n  inspect   Inspect classifications, warnings, and evidence limitations in a JSON report\n  version   Display the CLI version\n  help      Display command help\n\n\
+Commands:\n  analyze   Evaluate a validated local JSON snapshot (offline)\n  live      Acquire bounded Stellar Testnet evidence and evaluate it\n  inspect   Display a saved JSON report as unverified, caller-supplied data (not recomputed)\n  version   Display the CLI version\n  help      Display command help\n\n\
 Common options:\n  --format text|json       Human output (default) or stable JSON report\n  --output PATH            Write without overwriting an existing file\n  --force                  Explicitly permit replacement of an existing output file\n\n\
 Exit codes:\n  0  command completed (including a modeled blocked result; never transaction approval)\n  10 valid but unverified forecast containing warnings\n  20 inconclusive or contradictory evidence\n  30 unsupported operation or protocol\n  40 invalid CLI input or input file\n  50 live network/RPC failure\n  60 report output failure\n  70 internal error\n\n\
 Security boundary: the CLI is read-only, never signs or broadcasts, rejects bounded input/path\nviolations, and does not expose caller credentials in reports. UNVERIFIED_FORECAST is not a\nsuccessful transaction preflight.\n\nUse 'revoketrace help analyze', 'revoketrace help live', or 'revoketrace help inspect' for details.",
@@ -1429,6 +1461,43 @@ mod tests {
     }
 
     #[test]
+    fn cleartext_http_endpoints_are_limited_to_loopback_hosts() {
+        for accepted in [
+            "https://horizon-testnet.stellar.org",
+            "https://example.test:8443/rpc",
+            "http://localhost:8000",
+            "http://LOCALHOST/rpc",
+            "http://127.0.0.1:8000",
+            "http://[::1]:8000",
+        ] {
+            assert!(
+                validate_endpoint("RPC", accepted).is_ok(),
+                "should accept {}",
+                accepted
+            );
+        }
+        for rejected in [
+            "http://example.test",
+            "http://horizon-testnet.stellar.org",
+            "http://127.0.0.1.example.test",
+            "http://localhost.example.test",
+            "http://10.0.0.5:8000",
+            "ftp://example.test",
+            "example.test",
+        ] {
+            assert!(
+                validate_endpoint("RPC", rejected).is_err(),
+                "should reject {}",
+                rejected
+            );
+        }
+        let message = validate_endpoint("RPC", "http://example.test")
+            .unwrap_err()
+            .message;
+        assert!(message.contains("https://"), "{}", message);
+    }
+
+    #[test]
     fn output_format_is_strict() {
         let mut options = Options::default();
         options
@@ -1511,6 +1580,96 @@ mod tests {
 
         assert_eq!(code, EXIT_FORECAST_WARNING);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Runs `analyze` on the fixture with the given protocol metadata and
+    /// returns the exit code plus the JSON report text when one was written.
+    fn analyze_fixture_with_protocol(
+        label: &str,
+        protocol_version: Option<u32>,
+    ) -> (i32, Option<String>) {
+        let _lock = output_test_lock();
+        let dir = test_output_dir(label);
+        let mut value: Value =
+            serde_json::from_slice(include_bytes!("../fixtures/live-testnet-discovery.json"))
+                .expect("fixture snapshot");
+        value["protocol_version"] = match protocol_version {
+            Some(version) => Value::from(version),
+            None => Value::Null,
+        };
+        let snapshot_path = dir.join("snapshot.json");
+        fs::write(&snapshot_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let report_path = dir.join("report.json");
+        let issuer = "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG";
+        let code = run([
+            OsString::from("revoketrace"),
+            OsString::from("analyze"),
+            OsString::from("--snapshot"),
+            snapshot_path.into_os_string(),
+            OsString::from("--operation"),
+            OsString::from("SetTrustLineFlags"),
+            OsString::from("--source-account"),
+            OsString::from(issuer),
+            OsString::from("--trustor"),
+            OsString::from(VALID_ACCOUNT),
+            OsString::from("--asset-code"),
+            OsString::from("FLUTTER"),
+            OsString::from("--asset-issuer"),
+            OsString::from(issuer),
+            OsString::from("--before-flags"),
+            OsString::from("1"),
+            OsString::from("--after-flags"),
+            OsString::from("0"),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--output"),
+            report_path.clone().into_os_string(),
+        ]);
+        let report = fs::read_to_string(&report_path).ok();
+        fs::remove_dir_all(dir).unwrap();
+        (code, report)
+    }
+
+    #[test]
+    fn analyze_accepts_protocol_versions_at_both_reviewed_boundaries() {
+        for version in [
+            crate::protocol::MIN_SUPPORTED_PROTOCOL_VERSION,
+            crate::protocol::MAX_REVIEWED_PROTOCOL_VERSION,
+        ] {
+            let (code, report) = analyze_fixture_with_protocol("proto-edge", Some(version));
+            assert_eq!(code, EXIT_FORECAST_WARNING, "protocol {}", version);
+            let report = report.expect("report written");
+            assert!(report.contains("UNVERIFIED_FORECAST"));
+            assert!(!report.contains("W_PROTOCOL_UNVERIFIED"));
+        }
+    }
+
+    #[test]
+    fn analyze_refuses_protocol_versions_outside_the_reviewed_range() {
+        for version in [
+            crate::protocol::MIN_SUPPORTED_PROTOCOL_VERSION - 1,
+            crate::protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1,
+            u32::MAX,
+        ] {
+            let (code, report) = analyze_fixture_with_protocol("proto-out", Some(version));
+            assert_eq!(code, EXIT_UNSUPPORTED, "protocol {}", version);
+            let report = report.expect("an UNSUPPORTED report is written");
+            assert!(report.contains("\"UNSUPPORTED\""), "protocol {}", version);
+            assert!(report.contains("E_UNSUPPORTED"));
+            assert!(report.contains("reviewed range 18 to 29"));
+            assert!(!report.contains("UNVERIFIED_FORECAST"));
+            assert!(!report.contains("SUPPORTED_BLOCKED"));
+        }
+    }
+
+    #[test]
+    fn analyze_with_missing_protocol_metadata_warns_and_stays_unverified() {
+        let (code, report) = analyze_fixture_with_protocol("proto-none", None);
+        assert_eq!(code, EXIT_FORECAST_WARNING);
+        let report = report.expect("report written");
+        assert!(report.contains("W_PROTOCOL_UNVERIFIED"));
+        assert!(report.contains("protocol version evidence is unavailable"));
+        assert!(!report.contains("SUPPORTED_SAFE"));
     }
 
     #[test]

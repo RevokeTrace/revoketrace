@@ -56,6 +56,19 @@ report, verify its provenance or manifest digest, promote caller-supplied eviden
 recompute transaction safety, or approve a transaction. In particular,
 `UNVERIFIED_FORECAST` remains unverified when it is inspected.
 
+A saved report is caller-supplied data. Anyone can edit one, including its
+evidence classification (for example to `COMPLETE_AUTHORITATIVE_LEDGER`), its
+forecast classification, its warnings, and its limitations. `inspect` therefore
+presents the file as follows:
+
+- Text output starts with a `NOT VERIFIED BY REVOKETRACE` notice. It states that the file was supplied by the caller, that its origin is unauthenticated, that the forecast was not recomputed, and that this is not transaction approval.
+- The copied classifications are labelled `Saved evidence classification (unverified claim)` and `Saved forecast classification (not recomputed)`. Warnings, errors, and limitations are labelled as written in the file, and an empty limitations list is explained as not meaning that no limitations exist.
+- `--format json` prints the saved schema 1 document unchanged, so existing consumers keep working. Because that document cannot carry a notice, the same warning is printed to standard error. Do not treat the JSON from `inspect` as a fresh RevokeTrace result.
+- The exit code follows the saved forecast classification, so an edited file can produce exit code `0` or `10`. The exit code of `inspect` is not evidence that the forecast is correct.
+- A file whose forecast classification is not one RevokeTrace emits (such as `SUPPORTED_SAFE`) is rejected as invalid input (exit code 40).
+
+To get a forecast you can rely on, run `analyze` or `live` on the evidence itself.
+
 ## Output and file safety
 
 Text is the default output. Use `--format json` for the stable report schema below.
@@ -77,7 +90,17 @@ be trusted when `--force` is used. A failed write or installation removes its
 temporary file and does not install a partial report. Paths containing `..` are
 rejected for output files. `--output -` writes to stdout.
 
-Endpoints reject credentials, query strings, fragments, whitespace, and control characters. Reports contain public account and evidence identifiers only; credential-bearing endpoints are rejected before report generation.
+Endpoints must use `https://`. Plain `http://` is accepted only for a loopback host (`localhost`, `127.0.0.1`, or `[::1]`), because TLS is the only protection for the Horizon and RPC responses. Endpoints also reject embedded user information, `%` encoding, query strings, fragments, whitespace, and control characters. Live reports record both endpoint URLs verbatim. Validation cannot detect a secret placed in the URL path, so use public endpoints that need no key in the URL. Reports otherwise contain public account and evidence identifiers only.
+
+Live requests are made by the system `curl` executable, started with a fixed set of options:
+
+- `-q` is the first option, so `curl` does not read `.curlrc` or any configuration under `CURL_HOME`. A configuration file cannot add redirect following, a different proxy, or looser certificate settings.
+- `curl` itself is limited to `https` (or `http` for the loopback hosts above) with `--proto` and `--proto-redir`, and TLS 1.2 or later is required for HTTPS. A URL with another scheme, such as `file://`, or cleartext to a remote host, is refused before `curl` starts.
+- Redirects are never followed (`--max-redirs 0`). A 3xx answer is an error, and the redirect target is not contacted.
+- Any HTTP status outside 200 to 299 is a network failure (exit code 50), and the response body is not used. HTTP 429 is reported as rate limited. The request has no retry on these statuses.
+- The request body is sent literally (`--data-raw`) and URL globbing is off.
+
+Proxy and CA environment variables such as `HTTPS_PROXY` and `SSL_CERT_FILE` are still honored. They belong to the operator's trusted environment. `curl` has no environment setting that turns certificate verification off.
 
 ## JSON report schema
 
@@ -124,7 +147,7 @@ Contains the engine classification, transition, sorted pool redemptions, sorted 
 - `UNVERIFIED_FORECAST`: internally modeled output with unresolved evidence limitations; never a successful transaction preflight.
 - `SUPPORTED_BLOCKED`: the modeled protocol rules identify a supported blocker.
 - `INCONCLUSIVE`: required evidence is missing or contradictory.
-- `UNSUPPORTED`: the operation or protocol is outside the supported scope.
+- `UNSUPPORTED`: the operation or protocol is outside the supported scope. Protocol versions 18 to 29 are evaluated; anything else is refused.
 
 The engine has no independently verified safe-preflight path, so the CLI does not emit a `SUPPORTED_SAFE` result.
 

@@ -16,6 +16,10 @@ pub const REPORT_SCHEMA_VERSION: u32 = 1;
 pub const REPORT_TYPE: &str = "revoketrace.forecast";
 pub const TOOL_NAME: &str = "revoketrace";
 
+/// Printed on standard error when a saved report is inspected as JSON, where
+/// the schema 1 document itself cannot carry a warning.
+pub const INSPECTION_JSON_NOTICE: &str = "notice: this report was read from a caller-supplied file. Its origin is unauthenticated, RevokeTrace did not recompute the forecast or re-check any ledger evidence, and its labels are saved claims, not verified results. This is not transaction approval.";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportMode {
@@ -361,6 +365,9 @@ fn build_evidence(
     if snapshot.base_reserve_stroops.is_none() {
         limitations.push("base reserve evidence is unavailable".to_owned());
     }
+    if snapshot.protocol_version.is_none() {
+        limitations.push("protocol version evidence is unavailable".to_owned());
+    }
     if matches!(
         engine_report.classification,
         Classification::UnverifiedForecast
@@ -568,6 +575,8 @@ fn warning_code(message: &str) -> &'static str {
         "W_POOL_DELETION_UNFORECAST"
     } else if message.contains("not independently verified") {
         "W_UNVERIFIED_DISCOVERY"
+    } else if message.contains("protocol version was not supplied") {
+        "W_PROTOCOL_UNVERIFIED"
     } else {
         "W_ENGINE"
     }
@@ -596,11 +605,45 @@ fn sort_unique(values: &mut Vec<String>) {
 
 /// Renders a report in plain English without presenting it as transaction
 /// approval or authoritative ledger certification.
+/// Renders a report that this process just produced from its own evaluation.
 pub fn render_human(report: &ReportDocument) -> String {
+    render_report(report, false)
+}
+
+/// Renders a report read back from a caller-supplied file.
+///
+/// Nothing in the file is authenticated or recomputed, so the output states
+/// that first and labels every copied value as a saved claim.
+pub fn render_human_inspection(report: &ReportDocument) -> String {
+    render_report(report, true)
+}
+
+fn render_report(report: &ReportDocument, saved: bool) -> String {
     let mut out = String::new();
-    out.push_str("RevokeTrace Forecast Report\n");
-    out.push_str("============================\n");
-    out.push_str(&format!("Mode: {}\n", report.mode.label()));
+    if saved {
+        out.push_str("RevokeTrace Saved Report Inspection\n");
+        out.push_str("====================================\n");
+        out.push_str("NOT VERIFIED BY REVOKETRACE\n");
+        out.push_str("- This file was supplied by the caller. Its origin is unauthenticated.\n");
+        out.push_str(
+            "- RevokeTrace did not recompute the forecast or re-check any ledger evidence.\n",
+        );
+        out.push_str(
+            "- Every value below is copied from the file. Saved labels, including the evidence\n",
+        );
+        out.push_str(
+            "  classification, are claims in the file, not results verified by this run.\n",
+        );
+        out.push_str("- This is not transaction approval.\n\n");
+    } else {
+        out.push_str("RevokeTrace Forecast Report\n");
+        out.push_str("============================\n");
+    }
+    out.push_str(&format!(
+        "{}: {}\n",
+        if saved { "Saved mode" } else { "Mode" },
+        report.mode.label()
+    ));
     out.push_str(&format!(
         "Requested authorization change: {}\n",
         report.operation.operation
@@ -620,14 +663,25 @@ pub fn render_human(report: &ReportDocument) -> String {
         report.evidence.ledger_sequence,
         report.evidence.entries_ledger_sequence
     ));
-    out.push_str(&format!(
-        "Evidence classification: {}\n",
-        evidence_classification_label(report.evidence.evidence_classification)
-    ));
-    out.push_str(&format!(
-        "Forecast classification: {}\n",
-        classification_label(report.forecast.classification)
-    ));
+    if saved {
+        out.push_str(&format!(
+            "Saved evidence classification (unverified claim): {}\n",
+            evidence_classification_label(report.evidence.evidence_classification)
+        ));
+        out.push_str(&format!(
+            "Saved forecast classification (not recomputed): {}\n",
+            classification_label(report.forecast.classification)
+        ));
+    } else {
+        out.push_str(&format!(
+            "Evidence classification: {}\n",
+            evidence_classification_label(report.evidence.evidence_classification)
+        ));
+        out.push_str(&format!(
+            "Forecast classification: {}\n",
+            classification_label(report.forecast.classification)
+        ));
+    }
     out.push_str(&format!(
         "Transition: {}\n",
         transition_label(report.forecast.transition)
@@ -701,15 +755,42 @@ pub fn render_human(report: &ReportDocument) -> String {
         }
     }
 
-    append_diagnostics(&mut out, "Warnings", &report.warnings);
-    append_diagnostics(&mut out, "Errors", &report.errors);
-    out.push_str("\nEvidence limitations:\n");
+    append_diagnostics(
+        &mut out,
+        if saved {
+            "Warnings (as written in the file)"
+        } else {
+            "Warnings"
+        },
+        &report.warnings,
+    );
+    append_diagnostics(
+        &mut out,
+        if saved {
+            "Errors (as written in the file)"
+        } else {
+            "Errors"
+        },
+        &report.errors,
+    );
+    out.push_str(if saved {
+        "\nEvidence limitations (as written in the file):\n"
+    } else {
+        "\nEvidence limitations:\n"
+    });
     if report.evidence.limitations.is_empty() {
-        out.push_str("- None recorded.\n");
+        out.push_str(if saved {
+            "- None written in the file. This does not mean the evidence has no limitations.\n"
+        } else {
+            "- None recorded.\n"
+        });
     } else {
         for limitation in &report.evidence.limitations {
             out.push_str(&format!("- {}\n", limitation));
         }
+    }
+    if saved {
+        out.push_str("\nInspection notice: nothing above was verified by RevokeTrace. To obtain a forecast, run analyze or live on the evidence itself.\n");
     }
     out
 }
