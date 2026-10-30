@@ -1,11 +1,10 @@
 name: Documentation
 
 on:
+  # No path filter on pull requests: a required check that is skipped by a
+  # filter stays pending forever, so the documentation build runs on every
+  # pull request and can be made a required check without blocking unrelated work.
   pull_request:
-    paths:
-      - 'book.toml'
-      - 'book/**'
-      - '.github/workflows/docs.yml'
   push:
     branches: [main]
     paths:
@@ -22,13 +21,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  # The check name `docs` is what branch protection should require.
+  # Upload and deployment below are limited to pushes on main.
+  docs:
+    name: docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: '1.97.1'
+      - name: Check relative Markdown links
+        run: python3 scripts/check-doc-links.py
       - name: Install pinned mdBook
         run: cargo install mdbook --version 0.4.52 --locked
       - name: Build book
@@ -41,7 +45,7 @@ jobs:
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build
+    needs: docs
     runs-on: ubuntu-latest
     permissions:
       pages: write

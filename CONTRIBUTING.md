@@ -41,6 +41,8 @@ git diff --check
 
 The GitHub Actions `rust` check enforces formatting, locked tests, the binary build, strict Clippy, `cargo audit --deny warnings`, and warning-denied rustdoc. The audit installation is version-pinned in CI. Run the same commands locally before opening a pull request.
 
+The `docs` check builds the mdBook on every pull request. To reproduce it locally, install the pinned version with `cargo install mdbook --version 0.4.52 --locked` and run `mdbook build`. See [maintenance](docs/maintenance.md) for how the check relates to branch protection.
+
 ## Tests and fixtures
 
 Add a regression test for every behavior change. Keep synthetic protocol cases in [fixtures/cap0038](fixtures/cap0038/) and label them as synthetic. Do not present a synthetic fixture as a live ledger observation.
