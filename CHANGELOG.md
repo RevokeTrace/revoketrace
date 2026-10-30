@@ -1,10 +1,13 @@
 # Changelog
 
-## 1.0.0 release candidate
+## 1.0.0 (published)
 
-This is a release-candidate record for maintainer review. It does not create a
-Git tag, publish a GitHub release, or publish the crate. Those actions require
-explicit maintainer authorization.
+Published 2026-10-30: [RevokeTrace v1.0.0](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0), from immutable source commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`.
+
+The release is source-distributed. GitHub provides the release source archives,
+but no independently verified downloadable binary is attached. Later
+documentation improvements on `main` are not automatically part of the tagged
+source archive.
 
 RevokeTrace 1.0.0 includes:
 
@@ -37,9 +40,8 @@ for the complete command, report, exit-code, and file-safety contract.
 ### Compatibility and evidence boundary
 
 The report contract remains `schema_version: 1` and
-`report_type: "revoketrace.forecast"`. This candidate reports tool version
-`1.0.0`; it does not silently change the JSON schema or add a safe-preflight
-classification.
+`report_type: "revoketrace.forecast"`. v1.0.0 reports tool version `1.0.0`; it
+does not silently change the JSON schema or add a safe-preflight classification.
 
 Offline snapshots and saved reports remain untrusted caller data. Live mode is
 bounded current-tip Testnet evidence. It does not prove exhaustive ledger

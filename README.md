@@ -20,7 +20,7 @@ It is useful to Stellar issuers, protocol researchers, and maintainers investiga
 
 Start with the [Documentation](https://revoketrace.github.io/revoketrace/) or the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
 
-The [1.0.0 release-candidate record](CHANGELOG.md) summarizes the candidate contract, reproduction path, and remaining release limitations. It is not a published release.
+RevokeTrace [v1.0.0 is published](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0) from immutable source commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`. It is source-distributed: GitHub provides source archives, but no independently verified binary asset is attached. Documentation improvements merged after that tag are part of `main`, not of the tagged source archive.
 
 Report files are written through an exclusively created, flushed temporary file.
 Without `--force`, the final installation is atomic and no-replace; an existing or
