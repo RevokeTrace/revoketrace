@@ -77,7 +77,7 @@ be trusted when `--force` is used. A failed write or installation removes its
 temporary file and does not install a partial report. Paths containing `..` are
 rejected for output files. `--output -` writes to stdout.
 
-Endpoints reject credentials, query strings, fragments, whitespace, and control characters. Reports contain public account and evidence identifiers only; credential-bearing endpoints are rejected before report generation.
+Endpoints must use `https://`. Plain `http://` is accepted only for a loopback host (`localhost`, `127.0.0.1`, or `[::1]`), because TLS is the only protection for the Horizon and RPC responses. Endpoints also reject embedded user information, `%` encoding, query strings, fragments, whitespace, and control characters. Live reports record both endpoint URLs verbatim. Validation cannot detect a secret placed in the URL path, so use public endpoints that need no key in the URL. Reports otherwise contain public account and evidence identifiers only.
 
 ## JSON report schema
 

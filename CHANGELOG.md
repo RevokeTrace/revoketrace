@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Live endpoints must use `https://`. Plain `http://` is accepted only for loopback hosts. Documented that endpoint URLs are recorded verbatim in live reports.
+
 ## 1.0.0 (published)
 
 Published 2026-10-30: [RevokeTrace v1.0.0](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0), from immutable source commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`.
