@@ -1,10 +1,24 @@
+<div align="center">
+
 # RevokeTrace
+
+**Read-only Stellar Classic authorization forecasting**
+
+[![CI](https://github.com/RevokeTrace/revoketrace/actions/workflows/ci.yml/badge.svg)](https://github.com/RevokeTrace/revoketrace/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/Documentation-mdBook-blue)](https://revoketrace.github.io/revoketrace/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Rust 1.97.1](https://img.shields.io/badge/Rust-1.97.1-orange)](rust-toolchain.toml)
+[![Release](https://img.shields.io/github/v/release/RevokeTrace/revoketrace?label=Release)](https://github.com/RevokeTrace/revoketrace/releases)
+
+[Documentation](https://revoketrace.github.io/revoketrace/) · [Getting started](https://revoketrace.github.io/revoketrace/getting-started.html) · [Releases](https://github.com/RevokeTrace/revoketrace/releases) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+
+</div>
 
 RevokeTrace is a read-only Rust CLI and forecasting engine for Stellar Classic issuer authorization changes. It evaluates supplied ledger evidence and forecasts CAP-0038 liquidity-pool redemption effects. It never signs, constructs, broadcasts, or repairs transactions.
 
 It is useful to Stellar issuers, protocol researchers, and maintainers investigating what an authorization change may do to affected liquidity-pool positions. It reports modeled withdrawals, claimable-balance effects, sponsorship and reserve deltas, and evidence limitations. It does not prove that a transaction will succeed or that a supplied snapshot is a complete ledger view.
 
-Start with the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
+Start with the [Documentation](https://revoketrace.github.io/revoketrace/) or the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
 
 The [1.0.0 release-candidate record](CHANGELOG.md) summarizes the candidate contract, reproduction path, and remaining release limitations. It is not a published release.
 
