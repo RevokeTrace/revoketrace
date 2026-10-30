@@ -1,13 +1,13 @@
 RevokeTrace demonstration transcript
-Generated: 2026-10-30T22:17:07Z
-Source commit: 4d4e853c2f11dda02d81d6bc41b54859cce1f795
+Generated: 2026-10-30T23:12:05Z
+Source commit: 619de452d49d66ca2fcfd235ab8b30c4db2280dc
 Fixture note: fixtures/live-testnet-discovery.json is a stored snapshot from an earlier Testnet capture.
 It is not newly obtained network state, and no network request is made below.
 
 
 ### 1. Clean checkout and toolchain
 $ git log -1 --format=%H
-4d4e853c2f11dda02d81d6bc41b54859cce1f795
+619de452d49d66ca2fcfd235ab8b30c4db2280dc
 [exit code 0]
 $ cat rust-toolchain.toml
 [toolchain]
@@ -25,14 +25,14 @@ cargo 1.97.1 (c980f4866 2026-06-30)
 ### 2. Release build (documented command)
 $ cargo build --release --locked --bin revoketrace
    Compiling serde_core v1.0.229
-   Compiling proc-macro2 v1.0.107
    Compiling zmij v1.0.23
-   Compiling unicode-ident v1.0.27
+   Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
    Compiling serde_json v1.0.154
    Compiling serde v1.0.229
-   Compiling memchr v2.8.3
    Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
    Compiling version_check v0.9.5
    Compiling generic-array v0.14.7
    Compiling syn v3.0.9
@@ -40,21 +40,21 @@ $ cargo build --release --locked --bin revoketrace
    Compiling block-buffer v0.10.4
    Compiling crypto-common v0.1.7
    Compiling digest v0.10.7
-   Compiling serde_derive v1.0.229
-   Compiling cpufeatures v0.2.17
-   Compiling cfg-if v1.0.5
    Compiling data-encoding v2.11.1
+   Compiling serde_derive v1.0.229
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.2.17
    Compiling sha2 v0.10.9
-   Compiling hex v0.4.3
-   Compiling escape-bytes v0.1.1
    Compiling ethnum v1.5.3
+   Compiling escape-bytes v0.1.1
+   Compiling hex v0.4.3
    Compiling base64 v0.22.1
    Compiling crate-git-revision v0.0.6
-   Compiling stellar-strkey v0.0.13
    Compiling crate-git-revision v0.0.9
+   Compiling stellar-strkey v0.0.13
    Compiling stellar-xdr v28.0.1
-   Compiling revoketrace-spike v1.0.0 (/tmp/tmp.GWTjrDaCcp/checkout)
-    Finished `release` profile [optimized] target(s) in 22.06s
+   Compiling revoketrace-spike v1.0.0 (/tmp/tmp.49e0DYYih7/checkout)
+    Finished `release` profile [optimized] target(s) in 24.23s
 [exit code 0]
 
 
@@ -161,10 +161,10 @@ Evidence limitations:
 
 ### 6. JSON report, written twice to prove deterministic output
 $ revoketrace analyze --snapshot fixtures/live-testnet-discovery.json --operation SetTrustLineFlags --source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --trustor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB --asset-code FLUTTER --asset-issuer GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --before-flags 1 --after-flags 0 --tx-source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --sequence 42 --operation-index 0 --format json --output \$WORK/report-a.json
-report written to /tmp/tmp.GWTjrDaCcp/report-a.json
+report written to /tmp/tmp.49e0DYYih7/report-a.json
 [exit code 10]
 $ revoketrace analyze --snapshot fixtures/live-testnet-discovery.json --operation SetTrustLineFlags --source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --trustor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB --asset-code FLUTTER --asset-issuer GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --before-flags 1 --after-flags 0 --tx-source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --sequence 42 --operation-index 0 --format json --output \$WORK/report-b.json
-report written to /tmp/tmp.GWTjrDaCcp/report-b.json
+report written to /tmp/tmp.49e0DYYih7/report-b.json
 [exit code 10]
 Determinism check: report-a.json and report-b.json are byte-identical.
 SHA-256: 63ea104aebe4612e1d121eb61de1087e7b2796207fef25cc7a9a138b26624937
@@ -174,7 +174,7 @@ schema_version and report_type from the file:
 
 ### 7. Fail closed: refusing to overwrite an existing report
 $ revoketrace analyze --snapshot fixtures/live-testnet-discovery.json --operation SetTrustLineFlags --source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --trustor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB --asset-code FLUTTER --asset-issuer GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --before-flags 1 --after-flags 0 --tx-source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --sequence 42 --operation-index 0 --format json --output \$WORK/report-a.json
-error: refusing to overwrite existing file '/tmp/tmp.GWTjrDaCcp/report-a.json'; pass --force to replace it
+error: refusing to overwrite existing file '/tmp/tmp.49e0DYYih7/report-a.json'; pass --force to replace it
 [exit code 60]
 
 
@@ -306,7 +306,7 @@ Inspection notice: nothing above was verified by RevokeTrace. To obtain a foreca
 ### 10. Fail closed: unsupported protocol version
 The snapshot's protocol_version is set to 30, outside the reviewed range 18 to 29.
 $ revoketrace analyze --snapshot \$WORK/protocol30.json --operation SetTrustLineFlags --source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --trustor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB --asset-code FLUTTER --asset-issuer GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --before-flags 1 --after-flags 0 --tx-source-account GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG --sequence 42 --operation-index 0 --format json --output \$WORK/report-p30.json
-report written to /tmp/tmp.GWTjrDaCcp/report-p30.json
+report written to /tmp/tmp.49e0DYYih7/report-p30.json
 [exit code 30]
 The report written for that run (classification and error only):
 UNSUPPORTED ['unsupported protocol version: 30 is outside the reviewed range 18 to 29']
