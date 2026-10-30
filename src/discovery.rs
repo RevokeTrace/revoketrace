@@ -45,6 +45,10 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
 }
 
 const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const DISCOVERY_USER_AGENT_HEADER: &str = concat!(
+    "User-Agent: RevokeTrace-Discovery/",
+    env!("CARGO_PKG_VERSION")
+);
 
 pub fn encode_account_id(bytes: &[u8; 32]) -> String {
     let mut payload = Vec::with_capacity(35);
@@ -344,7 +348,7 @@ impl HttpTransport for CurlTransport {
             .arg("-H")
             .arg("Content-Type: application/json")
             .arg("-H")
-            .arg("User-Agent: RevokeTrace-Discovery/0.1.0")
+            .arg(DISCOVERY_USER_AGENT_HEADER)
             .arg("--max-time")
             .arg(&timeout_str)
             .arg("-d")
@@ -361,7 +365,7 @@ impl HttpTransport for CurlTransport {
             .arg("GET")
             .arg(url)
             .arg("-H")
-            .arg("User-Agent: RevokeTrace-Discovery/0.1.0")
+            .arg(DISCOVERY_USER_AGENT_HEADER)
             .arg("--max-time")
             .arg(&timeout_str);
         collect_curl_output(command, "get")
