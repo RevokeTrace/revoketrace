@@ -43,7 +43,7 @@ The project has no network requirement for offline analysis. Live mode is an opt
 
 ## What the CLI helps investigate
 
-`analyze` evaluates a caller-supplied snapshot without contacting the network. `live` obtains a bounded current-tip Testnet snapshot through the existing adapter. `inspect` reads a saved versioned report without authenticating or recomputing it.
+`analyze` evaluates a caller-supplied snapshot without contacting the network. `live` obtains a bounded current-tip Testnet snapshot through the existing adapter. `inspect` reads a saved versioned report without authenticating or recomputing it, and labels the output as unverified caller-supplied data.
 
 The engine can model CAP-0038 pool redemptions, integer withdrawal amounts, claimable-balance IDs when complete operation context is supplied, clawback flags, sponsorship, reserve effects, and pool-deletion counters when the relevant evidence is present. It also identifies missing or contradictory evidence.
 
