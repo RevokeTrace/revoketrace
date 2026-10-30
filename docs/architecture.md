@@ -39,7 +39,7 @@ For offline analysis, `execute_analyze` reads at most 8 MiB, deserializes a `Sna
 
 For live analysis, `execute_live` accepts only the Testnet passphrase and validated HTTPS endpoints. `AuthoritativeEvidenceAdapter::acquire_live_evidence` first uses Horizon to enumerate the caller's candidate balances, builds no more than 200 RPC ledger keys, then obtains a ledger header and the matching `getLedgerEntries` batch. It validates XDR, requested-key identity, pool IDs, sponsorship extensions, and the matching ledger sequence. If the ledger advances during capture it retries a bounded number of times; a persistent mismatch fails closed. The resulting observation is `BOUNDED_CURRENT_TIP_RPC`, not a full ledger export.
 
-`inspect` only deserializes a bounded report and calls `ReportDocument::validate_schema`. It preserves the saved classification and never treats a manifest, provenance label, or report body as authenticated ledger evidence.
+`inspect` only deserializes a bounded report and calls `ReportDocument::validate_schema`. It preserves the saved classification and never treats a manifest, provenance label, or report body as authenticated ledger evidence. Its text output uses a separate renderer (`render_human_inspection`) that opens with a not-verified notice and labels every copied value as a saved claim. Its JSON output stays the unchanged schema 1 document, with the same notice on standard error.
 
 ## Trust and authority boundaries
 

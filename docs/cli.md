@@ -56,6 +56,19 @@ report, verify its provenance or manifest digest, promote caller-supplied eviden
 recompute transaction safety, or approve a transaction. In particular,
 `UNVERIFIED_FORECAST` remains unverified when it is inspected.
 
+A saved report is caller-supplied data. Anyone can edit one, including its
+evidence classification (for example to `COMPLETE_AUTHORITATIVE_LEDGER`), its
+forecast classification, its warnings, and its limitations. `inspect` therefore
+presents the file as follows:
+
+- Text output starts with a `NOT VERIFIED BY REVOKETRACE` notice. It states that the file was supplied by the caller, that its origin is unauthenticated, that the forecast was not recomputed, and that this is not transaction approval.
+- The copied classifications are labelled `Saved evidence classification (unverified claim)` and `Saved forecast classification (not recomputed)`. Warnings, errors, and limitations are labelled as written in the file, and an empty limitations list is explained as not meaning that no limitations exist.
+- `--format json` prints the saved schema 1 document unchanged, so existing consumers keep working. Because that document cannot carry a notice, the same warning is printed to standard error. Do not treat the JSON from `inspect` as a fresh RevokeTrace result.
+- The exit code follows the saved forecast classification, so an edited file can produce exit code `0` or `10`. The exit code of `inspect` is not evidence that the forecast is correct.
+- A file whose forecast classification is not one RevokeTrace emits (such as `SUPPORTED_SAFE`) is rejected as invalid input (exit code 40).
+
+To get a forecast you can rely on, run `analyze` or `live` on the evidence itself.
+
 ## Output and file safety
 
 Text is the default output. Use `--format json` for the stable report schema below.

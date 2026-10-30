@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `inspect` now states that a saved report is caller-supplied, unauthenticated, not recomputed, and not transaction approval. Text output labels copied classifications as saved claims. JSON output is unchanged schema 1, with the notice on standard error.
+
 ## 1.0.0 (published)
 
 Published 2026-10-30: [RevokeTrace v1.0.0](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0), from immutable source commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`.

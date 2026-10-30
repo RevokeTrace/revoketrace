@@ -16,7 +16,10 @@ use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use serde_json::Value;
 
 use crate::evidence::{AuthoritativeCaptureArtifact, EvidenceClassification};
-use crate::report::{ReportClassification, ReportDocument, ReportMode, render_human};
+use crate::report::{
+    INSPECTION_JSON_NOTICE, ReportClassification, ReportDocument, ReportMode, render_human,
+    render_human_inspection,
+};
 use crate::{
     AuthoritativeEvidenceAdapter, Classification, CreditAsset, CurlTransport, DiscoveryError,
     DiscoverySource, OperationSpec, Report as EngineReport, Snapshot, classify_transition,
@@ -821,7 +824,16 @@ fn execute_inspect(request: InspectRequest) -> Result<i32, CliError> {
     let report: ReportDocument = serde_json::from_slice(&bytes)
         .map_err(|error| CliError::invalid(format!("report JSON is invalid: {}", error)))?;
     report.validate_schema().map_err(CliError::invalid)?;
-    emit_document(&report, &request.output)?;
+    let rendered = match request.output.format {
+        OutputFormat::Text => render_human_inspection(&report).into_bytes(),
+        OutputFormat::Json => {
+            eprintln!("{}", INSPECTION_JSON_NOTICE);
+            report.json_bytes().map_err(|error| {
+                CliError::internal(format!("cannot serialize JSON report: {}", error))
+            })?
+        }
+    };
+    emit_bytes(&rendered, &request.output)?;
     Ok(exit_code_for_classification(report.forecast.classification))
 }
 
@@ -1081,18 +1093,22 @@ fn emit_document(report: &ReportDocument, output: &OutputOptions) -> Result<(), 
             CliError::internal(format!("cannot serialize JSON report: {}", error))
         })?,
     };
+    emit_bytes(&bytes, output)
+}
+
+fn emit_bytes(bytes: &[u8], output: &OutputOptions) -> Result<(), CliError> {
     if let Some(path) = &output.output {
         if path.as_os_str() == "-" {
-            io::stdout().write_all(&bytes).map_err(|error| CliError {
+            io::stdout().write_all(bytes).map_err(|error| CliError {
                 code: EXIT_OUTPUT,
                 message: format!("cannot write report to stdout: {}", error),
             })?;
         } else {
-            write_atomic(path, &bytes, output.force)?;
+            write_atomic(path, bytes, output.force)?;
             eprintln!("report written to {}", path.display());
         }
     } else {
-        io::stdout().write_all(&bytes).map_err(|error| CliError {
+        io::stdout().write_all(bytes).map_err(|error| CliError {
             code: EXIT_OUTPUT,
             message: format!("cannot write report to stdout: {}", error),
         })?;
