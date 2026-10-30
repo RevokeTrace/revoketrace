@@ -6,3 +6,5 @@ src = "book/src"
 
 [build]
 build-dir = "book/output"
+# Fail the build when a chapter listed in SUMMARY.md does not exist, instead of creating it.
+create-missing = false
