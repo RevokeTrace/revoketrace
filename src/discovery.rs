@@ -1,10 +1,13 @@
-//! Research-only Discovery Prototype for Phase 1C: Two-Tier Candidate Enumeration and Bounded RPC Verification.
+//! Bounded two-tier candidate enumeration and RPC verification.
 //!
 //! Tier 1: Blind candidate enumeration via Horizon account balance views.
 //! Tier 2: Atomic single-batch verification via Stellar RPC `getLedgerEntries` at the current tip.
 //! Reconciles supplied candidate pools pairing the target credit asset against on-chain
 //! `liquidityPoolUseCount`.
-//! All failures fail closed as `Inconclusive`.
+//! This adapter is used by the CLI's read-only live path. It verifies the
+//! returned candidate set and current-tip ledger entries, but cannot prove
+//! exhaustive or historical ledger coverage. All failures fail closed as
+//! `Inconclusive`.
 
 use serde::{Deserialize, Serialize};
 use std::io::Read;
