@@ -37,7 +37,7 @@ Treat all of the following as untrusted unless the implementation explicitly der
 - Network, ledger, sequence, sponsorship, and authority claims supplied by callers.
 - Input and output file paths.
 
-`UNVERIFIED_FORECAST` is a modeled result with evidence limitations, not transaction approval. `SUPPORTED_BLOCKED` is a modeled blocker, not proof of every network precondition. `COMPLETE_AUTHORITATIVE_LEDGER` and `SUPPORTED_SAFE` are not reachable from ordinary caller-supplied CLI inputs. Report inspection validates an envelope only and does not authenticate provenance.
+`UNVERIFIED_FORECAST` is a modeled result with evidence limitations, not transaction approval. `SUPPORTED_BLOCKED` is a modeled blocker, not proof of every network precondition. `COMPLETE_AUTHORITATIVE_LEDGER` cannot be derived from caller-supplied snapshots by `analyze` or `live`, and `SUPPORTED_SAFE` is not emitted. A crafted saved report may contain an authority label, but `inspect` validates an envelope only and does not authenticate, recompute, or promote that report as evidence.
 
 ## Disclosure
 
