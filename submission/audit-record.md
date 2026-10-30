@@ -8,19 +8,21 @@ Classes: A blocker, B stale or cosmetic, C known limitation, D important pre-sub
 
 ### A: Blockers
 
-None confirmed in the implementation. Submission-level conditions that are outside the code (unverified program rules, unmerged changes) are in the freeze record below.
+None confirmed in the implementation. Submission-level conditions that are outside the code (unverified program rules, this pull request not yet merged) are in the freeze record below.
 
 ### D: Important pre-submission fixes
 
 | ID | Finding | Evidence | Status |
 | --- | --- | --- | --- |
-| D1 | Only a lower protocol bound was enforced, so an unreviewed newer protocol would be evaluated. | `src/evidence.rs`, `src/lib.rs` at `7326436`; [decision](../research/protocol-support-decision.md) | Fixed in the protocol pull request. Range 18 to 29. |
-| D2 | `inspect` printed a caller-supplied report under the same title and field names as a fresh forecast. A doctored `COMPLETE_AUTHORITATIVE_LEDGER` label looked authoritative. | `tests/inspect_cli.rs`, [transcript step 9](demo/transcript.txt) | Fixed in the inspect pull request. Schema 1 unchanged. |
-| D3 | The documentation check was filtered by path, was not required by branch protection, and `mdbook build` exited 0 for a missing chapter or broken link. | GitHub branch API (required checks: `rust` only); local negative tests | Workflow fixed in the docs pull request. **Open:** an administrator must require `docs`. |
-| D4 | Live mode accepted `http://` for any host although the documentation says HTTPS. TLS is the only authenticity layer for provider responses. | `validate_endpoint` at `7326436`; `tests/live_cli.rs` | Fixed in the endpoint pull request. |
-| D5 | `SECURITY.md` omitted supported versions, trust boundaries, resource bounds, dependency scanning, and audit status. | `SECURITY.md` at `7326436` | Fixed in the documentation pull request. |
+| D1 | Only a lower protocol bound was enforced, so an unreviewed newer protocol would be evaluated. | `src/evidence.rs`, `src/lib.rs` at `7326436`; [decision](../research/protocol-support-decision.md) | Fixed in PR 14, merged as `965b2c5`. Range 18 to 29. |
+| D2 | `inspect` printed a caller-supplied report under the same title and field names as a fresh forecast. A doctored `COMPLETE_AUTHORITATIVE_LEDGER` label looked authoritative. | `tests/inspect_cli.rs`, [transcript step 9](demo/transcript.txt) | Fixed in PR 15, merged as `5d2ef06`. Schema 1 unchanged. |
+| D3 | The documentation check was filtered by path, was not required by branch protection, and `mdbook build` exited 0 for a missing chapter or broken link. | GitHub branch API (required checks: `rust` only); local negative tests | Workflow fixed in PR 16, merged as `91cd30a`; `docs`, `deploy` and `rust` all passed on `main`. **Open:** `main` still requires only `rust` (branch API, 2026-10-30), so an administrator must add `docs`. |
+| D4 | Live mode accepted `http://` for any host although the documentation says HTTPS. TLS is the only authenticity layer for provider responses. | `validate_endpoint` at `7326436`; `tests/live_cli.rs` | Fixed in PR 17, merged as `6ea854d`. |
+| D5 | `SECURITY.md` omitted supported versions, trust boundaries, resource bounds, dependency scanning, and audit status. | `SECURITY.md` at `7326436` | Fixed in PR 19 (this pull request). |
 | D6 | The CLI reference said credential-bearing endpoints are rejected. A secret in the URL path is accepted and recorded in the report. | Run of `live` with a path token; `ReportSource` fields | Documentation corrected. Behavior documented as a limitation. |
 | D7 | The repository has no topics. | GitHub API `topics` returned an empty list | **Open:** needs administrator access, which this session lacked. |
+| D8 | The live adapter decoded `headerXdr` before applying the protocol range, so a real protocol 30 header would have exited 50 instead of 30. Found in maintainer review, after the first version of PR 14. | Mutation check: removing the new pre-decode check makes `unsupported_rpc_protocol_is_refused_before_the_header_is_decoded` fail with `ParseError`; `tests/live_protocol_cli.rs` | Fixed in `d9e7fd4`, part of the merge of PR 14. |
+| D9 | The `curl` transport read `.curlrc`, relied on nothing in `curl` to enforce the protocol policy, could follow redirects through a configuration file, and noticed an HTTP error status only if its body failed to parse. Found in maintainer review. | `tests/curl_transport.rs`, including a control run that shows plain `curl` obeys a hostile `.curlrc`; removing `-q` makes the test fail | Fixed in `07d3572`, part of the merge of PR 17. |
 
 ### C: Known limitations
 
@@ -36,7 +38,6 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 ### E: Non-blocking backlog
 
 - Add an RPC `getNetwork` check. It needs a live run to verify the response shape, so it was not written blind.
-- Pass `-q`, `--proto =https`, and `--fail` to `curl`, or use a Rust HTTP client, so that a `.curlrc`, a redirect, or an HTTP error status cannot change behavior.
 - Give malformed provider data an exit code different from an unreachable provider (both are 50 now).
 - CI builds a debug binary and installs `cargo-audit` and `mdBook` from source on every run.
 - The package is named `revoketrace-spike`, which reads as a prototype.
@@ -45,7 +46,7 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 ### B: Stale or cosmetic
 
 - The v1.0.0 release title is `RevokeTrace v1.0.0.` with a trailing period. The release was left unchanged.
-- Test counts of 153 in the verification index and test matrix were updated to 184. Historical research files keep their dated counts.
+- Test counts of 153 in the verification index and test matrix were updated to 202. Historical research files keep their dated counts.
 
 ### Not applicable
 
@@ -63,6 +64,7 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 | Output installation | Exclusive temporary file, no-replace hard link, rename for `--force`, symbolic links refused. No defect found. |
 | Secrets | No key handling. Endpoint user information rejected. Path secrets are not detected (D6). |
 | Resource bounds | 8 MiB input, 10,000 items, 16 MiB response, 200 keys, 3 capture attempts, timeout 1 to 300 seconds. |
+| Network transport | `curl` runs with `-q`, protocol and redirect limits enforced by `curl`, TLS 1.2 or later, no redirects followed, and non-2xx statuses rejected (D9). Retries are bounded to 3 capture attempts. |
 | Workflow permissions | `contents: read`; only the `deploy` job has `pages: write` and `id-token: write`; `pull_request`, not `pull_request_target`; actions pinned by SHA. |
 | Dependencies | `cargo audit --deny warnings` exit 0, 1,395 advisories, 31 crates. No update bots. |
 
@@ -72,24 +74,24 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 
 | Field | Value |
 | --- | --- |
-| Candidate commit | Not set. The pull requests are unmerged. |
+| Candidate commit | Not set. `main` was at `2c01428` when this record was updated, and this pull request (19) is not yet merged. The commit to submit must be recorded after it merges. |
 | Date | 2026-10-30 (draft) |
 | Git status of the working branch | Clean at the last commit of the evidence branch |
-| Merged pull requests relevant to this pass | None. The previous alignment pull request was #13. |
-| Hosted CI | Last result: `main` at `7326436`, CI and Documentation both successful. No hosted run exists for the new changes. |
-| Documentation deployment | Hosted deploy succeeded for `7326436`. The site was not fetched from the sandbox. |
+| Merged pull requests relevant to this pass | 14 (protocol range), 15 (inspect labelling), 16 (documentation check), 17 (HTTPS endpoints and `curl` hardening), 18 (failure tests). All were merged by the GitHub account Hollujay, not by this review. 19 (this one) is open. |
+| Hosted CI | `main` at `91cd30a`: `deploy`, `docs`, `rust` successful. `main` at `6ea854d`: `rust` successful. `main` at `2c01428`: `rust` still running when this was written. Hosted CI for this pull request is recorded in its checks, not here. |
+| Documentation deployment | Hosted deploy succeeded on `main` at `91cd30a`, with the new workflow. The site itself was not fetched from the sandbox. |
 | Release identity | v1.0.0, tag object `984eec70af723c30bfc26864ddf9ef31fe67378a`, commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`, unchanged |
 | Verified evidence | See [docs/verification.md](../docs/verification.md) |
-| Local checks | fmt, 184 tests, release build, clippy, audit, rustdoc, mdBook 0.4.52, link check, `git diff --check` all passed on the evidence branch |
+| Local checks | fmt, 202 tests (181 unit, 21 binary-level), release build, clippy, audit, rustdoc, mdBook 0.4.52, link check, `git diff --check` all passed on the evidence branch |
 | Known limitations | See class C above |
 | Program eligibility | Drips NOT VERIFIED, GrantFox NOT VERIFIED |
 
 ### Remaining blockers to a ready declaration
 
-1. The pull requests must be pushed, pass hosted CI, be reviewed, and be merged. This session could not push (the GitHub App lacks access to the repository).
+1. This pull request (19) must pass hosted CI on its current head, be reviewed, and be merged.
 2. An administrator must require the `docs` check and add topics.
 3. A live Testnet run must be made from an environment with network access.
 4. The Drips and GrantFox rules must be read from official sources.
-5. The candidate commit must be recorded after merge, followed by a re-run of the checks on it.
+5. After 19 merges, the candidate commit must be recorded and the checks re-run on it, including the demonstration transcript.
 
 If a submission-critical defect is found after freeze, fix it, redo the affected checks, and repeat this audit.

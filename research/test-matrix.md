@@ -1,6 +1,6 @@
 # Current test and evidence matrix
 
-This mapping was reconciled against the source on 2026-10-30. Test names are implementation-level evidence, not a claim that a synthetic fixture or a mock response is a real ledger observation. The test count at the reconciliation run was 153.
+This mapping was reconciled against the source on 2026-10-30. Test names are implementation-level evidence, not a claim that a synthetic fixture or a mock response is a real ledger observation. The test count at the reconciliation run was 153. After the 2026-10-30 hardening changes it is 202 (181 unit tests and 21 binary-level tests under `tests/`).
 
 Status values:
 

@@ -13,7 +13,7 @@ Prepared 2026-10-30. This is submission preparation. It is not an application, i
 | Release | https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0, source only, no binary assets |
 | Release source commit | `9b0e10121a4413d07e6323bd351a6ed4680279bb` (annotated tag object `984eec70af723c30bfc26864ddf9ef31fe67378a`) |
 | `main` when this pack was drafted | `7326436a4e5dae801240cefbd5722b2719a049a8` |
-| Candidate source commit | Not fixed. The pull requests that change the code are unmerged, so the commit to submit does not exist yet. It must be recorded at freeze. |
+| Candidate source commit | Not fixed. The code changes (PRs 14 to 18) are on `main` (`2c01428` at the time of writing); the commit to submit is the one after this pull request (19) merges. It must be recorded at freeze. |
 | Primary deliverable | The `revoketrace` command-line program (Rust 1.97.1, `stellar-xdr` 28.0.1) |
 
 ## Problem
@@ -93,7 +93,7 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 - No private-key custody, wallet authentication, transaction signing, envelope construction, or broadcast. The dependencies are `serde`, `serde_json`, `stellar-xdr`, `sha2`, and `hex`.
 - Untrusted input: snapshots, saved reports, Horizon and RPC responses, and file paths are all treated as untrusted. Evidence classification is derived, never read from the caller.
 - Known report limitation: `inspect` does not authenticate a saved report or recompute its forecast, so a report can be edited. Its output says so, and its exit code follows the saved label.
-- Live endpoints must use `https://` (loopback excepted). The RPC server is not asked which network it serves.
+- Live endpoints must use `https://` (loopback excepted), and the `curl` transport reads no configuration file, never follows redirects, and rejects any non-2xx HTTP status. The RPC-reported protocol version is checked before the header is decoded. The RPC server is not asked which network it serves.
 - Private vulnerability reporting is enabled for the repository (confirmed through the GitHub API on 2026-10-30). The policy is in [SECURITY.md](../SECURITY.md) and promises no response time.
 - Independent audit status: no independent third-party security audit has taken place. Automated tests, `cargo audit`, and agent-assisted review are not a substitute and are not described as one.
 
@@ -125,14 +125,14 @@ No application was submitted, and no issue was created for either program. Detai
 | Documentation site | Deployed by a successful workflow; not fetched from the sandbox |
 | Release | Exists, source only, v1.0.0 |
 | CLI demonstration | Script and transcript from an actual run; no screen recording was made |
-| Test evidence | Local runs recorded in [docs/verification.md](../docs/verification.md); hosted CI for the unmerged changes does not exist yet |
+| Test evidence | Local runs recorded in [docs/verification.md](../docs/verification.md) (202 tests); hosted CI is green on `main` through `6ea854d`; this pull request's own checks are shown on the pull request |
 | Testnet evidence | Stored capture only; fresh live run BLOCKED |
 | Slide deck, video, second repository | Do not exist |
 | Any program's own required materials | Unknown, because the programs' rules were not read |
 
 ## Open items
 
-1. Merge the pull requests, then fix the candidate commit and record it in the freeze record.
+1. Merge this pull request (19), then fix the candidate commit and record it in the freeze record.
 2. Add `docs` as a required status check (administrator).
 3. Add repository topics (administrator): suggested `stellar`, `stellar-network`, `rust`, `cli`, `liquidity-pools`, `protocol-analysis`.
 4. Run `revoketrace live` once with open network access and record it in a new dated file.

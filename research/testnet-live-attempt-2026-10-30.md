@@ -58,6 +58,8 @@ The failure is in the execution environment, not in RevokeTrace, the endpoint, o
 
 To obtain a real run, someone with access must allow `horizon-testnet.stellar.org` and `soroban-testnet.stellar.org` in the environment's network policy, or run the same command on a machine with open egress, then record the result in a new dated file.
 
+The attempt used the transport as it was before PR #17, which has since been hardened (`-q`, protocol limits, no redirects, HTTP status checks). The failure happened while opening the connection, before any of that applies, so the result is not affected, but a new run should use the current `main`.
+
 ## What this record does and does not show
 
 It shows that a transport failure fails closed: exit code 50, no output, no report, and no partial forecast. That behavior is also covered by mock-transport tests, which are not live evidence.
