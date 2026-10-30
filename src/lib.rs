@@ -30,6 +30,8 @@ pub const AUTHORIZED_FLAG: u32 = 1;
 pub const AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG: u32 = 2;
 pub const TRUSTLINE_CLAWBACK_ENABLED_FLAG: u32 = 4;
 pub const CLAIMABLE_BALANCE_FLAG_CLAWBACK_ENABLED: u32 = 1;
+const AUTHORIZATION_FLAGS: u32 = AUTHORIZED_FLAG | AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG;
+const CLASSIC_AMOUNT_MAX: u64 = i64::MAX as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Transition {
@@ -415,6 +417,9 @@ fn forecast_amount(shares: u64, reserve: u64, total: u64) -> Result<u64, String>
         .checked_mul(u128::from(reserve))
         .ok_or_else(|| "pool redemption multiplication overflow".to_owned())?
         / u128::from(total);
+    if value > u128::from(CLASSIC_AMOUNT_MAX) {
+        return Err("pool redemption exceeds int64 amount".to_owned());
+    }
     u64::try_from(value).map_err(|_| "pool redemption exceeds int64 amount".to_owned())
 }
 
@@ -612,6 +617,12 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
             ));
         }
     }
+    if operation.operation == "AllowTrust"
+        && (operation.before_flags & !AUTHORIZATION_FLAGS)
+            != (operation.after_flags & !AUTHORIZATION_FLAGS)
+    {
+        errors.push("AllowTrust can only modify authorization flags".to_owned());
+    }
     let mut account_ids = std::collections::BTreeSet::new();
     for entry in &snapshot.accounts {
         if !account_ids.insert(&entry.id) {
@@ -759,6 +770,25 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         if pool.owner_pool_shares > pool.total_pool_shares {
             errors.push(format!(
                 "pool {} has more owner shares than total shares",
+                pool.pool_id
+            ));
+        }
+        for (label, amount) in [
+            ("reserve_a", pool.reserve_a),
+            ("reserve_b", pool.reserve_b),
+            ("total_pool_shares", pool.total_pool_shares),
+            ("owner_pool_shares", pool.owner_pool_shares),
+        ] {
+            if amount > CLASSIC_AMOUNT_MAX {
+                errors.push(format!(
+                    "pool {} {} exceeds the signed int64 maximum",
+                    pool.pool_id, label
+                ));
+            }
+        }
+        if pool.total_pool_shares == 0 && (pool.reserve_a != 0 || pool.reserve_b != 0) {
+            errors.push(format!(
+                "pool {} with zero total shares cannot have non-zero reserves",
                 pool.pool_id
             ));
         }
@@ -1535,6 +1565,27 @@ mod tests {
         assert_eq!(
             classify_transition(AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG, 0),
             Transition::ForcedPoolRedemption
+        );
+    }
+
+    #[test]
+    fn allow_trust_cannot_change_non_authorization_flags() {
+        let mut snap = snapshot(None, true);
+        snap.trustlines[0].flags = AUTHORIZED_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        let mut op = revoke();
+        op.operation = "AllowTrust".to_owned();
+        op.before_flags = AUTHORIZED_FLAG | TRUSTLINE_CLAWBACK_ENABLED_FLAG;
+        op.after_flags = 0;
+
+        let report = evaluate(&op, &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("AllowTrust can only modify authorization flags")),
+            "expected AllowTrust flag validation error, got {:?}",
+            report.errors
         );
     }
 
@@ -3364,6 +3415,42 @@ mod tests {
         }
         let report = evaluate(&revoke(), &snap);
         assert_eq!(report.classification, Classification::Inconclusive);
+    }
+
+    #[test]
+    fn pool_amounts_above_classic_int64_limit_are_inconclusive() {
+        let mut snap = snapshot(None, true);
+        snap.pool_share_trustlines[0].reserve_a = CLASSIC_AMOUNT_MAX + 1;
+
+        let report = evaluate(&revoke(), &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|error| error.contains("signed int64 maximum")),
+            "expected signed amount validation error, got {:?}",
+            report.errors
+        );
+    }
+
+    #[test]
+    fn zero_total_pool_shares_with_non_zero_reserves_are_inconclusive() {
+        let mut snap = snapshot(None, true);
+        let pool = &mut snap.pool_share_trustlines[0];
+        pool.reserve_a = 1;
+        pool.reserve_b = 0;
+        pool.total_pool_shares = 0;
+        pool.owner_pool_shares = 0;
+
+        let report = evaluate(&revoke(), &snap);
+        assert_eq!(report.classification, Classification::Inconclusive);
+        assert!(
+            report.errors.iter().any(|error| error
+                .contains("with zero total shares cannot have non-zero reserves")),
+            "expected empty-pool reserve validation error, got {:?}",
+            report.errors
+        );
     }
 
     #[test]
