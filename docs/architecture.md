@@ -53,7 +53,7 @@ Evidence and forecast classifications are separate. A caller cannot make a snaps
 
 Reports use `schema_version: 1` and type `revoketrace.forecast`. They carry the requested operation, derived evidence status, modeled forecast, diagnostics, and limitations. Equivalent validated inputs serialize in deterministic order. The binary uses exit codes to distinguish successful command execution, warnings, inconclusive evidence, unsupported behavior, invalid input, network failure, output failure, and internal failure.
 
-Live mode is limited to Stellar Testnet and rejects observed protocol versions below 18. The code uses `stellar-xdr` 28.0.1. This is generated-XDR compatibility for the stated scope, not an assertion that future protocol or XDR releases are automatically supported. The source and test evidence is indexed in [verification](verification.md).
+Live mode is limited to Stellar Testnet. Every path applies one protocol policy (`src/protocol.rs`): protocol versions 18 to 29 are evaluated and any other observed version is refused as `UNSUPPORTED` (exit code 30). A snapshot with no protocol version is evaluated with the warning `W_PROTOCOL_UNVERIFIED`. The code uses `stellar-xdr` 28.0.1. This is generated-XDR compatibility for the stated scope, not an assertion that future protocol or XDR releases are automatically supported. The reasoning for the 18 to 29 range is in the [protocol support decision](../research/protocol-support-decision.md). The source and test evidence is indexed in [verification](verification.md).
 
 ## Current design boundaries
 
