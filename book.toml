@@ -1,0 +1,8 @@
+[book]
+title = "RevokeTrace Documentation"
+authors = ["RevokeTrace"]
+language = "en"
+src = "book/src"
+
+[build]
+build-dir = "book/output"
