@@ -18,6 +18,7 @@ use stellar_xdr::{
 pub mod cli;
 pub mod discovery;
 pub mod evidence;
+pub mod protocol;
 pub mod report;
 pub use discovery::{
     CurlTransport, DiscoveryError, DiscoveryPipeline, HorizonAccountResponse, HorizonBalance,
@@ -500,9 +501,9 @@ fn validate_snapshot(snapshot: &Snapshot, operation: &OperationSpec) -> Vec<Stri
         errors.push("authoritative export ID is empty".to_owned());
     }
     if let Some(protocol_version) = snapshot.protocol_version
-        && protocol_version < 18
+        && !protocol::is_reviewed_protocol_version(protocol_version)
     {
-        errors.push("unsupported protocol version: protocol version is below 18".to_owned());
+        errors.push(protocol::unsupported_protocol_message(protocol_version));
     }
     if snapshot
         .base_reserve_stroops
@@ -901,6 +902,13 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
     } else {
         None
     };
+    let protocol_warning = snapshot.protocol_version.is_none().then_some(
+        format!(
+            "protocol version was not supplied; compatibility with the reviewed range {} to {} is unchecked",
+            protocol::MIN_SUPPORTED_PROTOCOL_VERSION,
+            protocol::MAX_REVIEWED_PROTOCOL_VERSION
+        ),
+    );
     let sponsorship_warning = (!snapshot.sponsorship_evidence_complete).then_some(
         "sponsorship identities and reserve counters are incomplete; forecast is not a complete preflight"
             .to_owned(),
@@ -915,6 +923,9 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
             warnings.push(w);
         }
         if let Some(w) = sponsorship_warning {
+            warnings.push(w);
+        }
+        if let Some(w) = protocol_warning.clone() {
             warnings.push(w);
         }
         return Report {
@@ -1210,6 +1221,9 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         if let Some(w) = sponsorship_warning {
             warnings.push(w);
         }
+        if let Some(w) = protocol_warning.clone() {
+            warnings.push(w);
+        }
         warnings.extend(eval_warnings);
         return Report {
             classification: Classification::UnverifiedForecast,
@@ -1371,6 +1385,9 @@ pub fn evaluate(operation: &OperationSpec, snapshot: &Snapshot) -> Report {
         warnings.push(w);
     }
     if let Some(w) = sponsorship_warning {
+        warnings.push(w);
+    }
+    if let Some(w) = protocol_warning {
         warnings.push(w);
     }
     warnings.extend(eval_warnings);
@@ -2925,12 +2942,62 @@ mod tests {
         let report = evaluate(&op, &snap);
         assert_eq!(report.classification, Classification::Unsupported);
         assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.contains("unsupported protocol version: protocol version is below 18")),
+            report.errors.iter().any(|e| e.contains(
+                "unsupported protocol version: 17 is outside the reviewed range 18 to 29"
+            )),
             "expected unsupported protocol version error, got: {:?}",
             report.errors
+        );
+    }
+
+    #[test]
+    fn protocol_policy_boundaries_are_enforced_by_the_engine() {
+        for (version, expect_unsupported) in [(17, true), (18, false), (29, false), (30, true)] {
+            let mut snap = snapshot(None, true);
+            snap.protocol_version = Some(version);
+            let report = evaluate(&revoke(), &snap);
+            assert_eq!(
+                report.classification == Classification::Unsupported,
+                expect_unsupported,
+                "protocol {} produced {:?}: {:?}",
+                version,
+                report.classification,
+                report.errors
+            );
+            if expect_unsupported {
+                assert!(report.pool_redemptions.is_empty());
+                assert!(
+                    report
+                        .errors
+                        .iter()
+                        .any(|e| e.contains("reviewed range 18 to 29"))
+                );
+            } else {
+                assert!(
+                    !report
+                        .warnings
+                        .iter()
+                        .any(|w| w.contains("protocol version")),
+                    "supplied protocol must not warn: {:?}",
+                    report.warnings
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_protocol_version_is_a_warning_not_an_approval() {
+        let mut snap = snapshot(None, true);
+        snap.protocol_version = None;
+        let report = evaluate(&revoke(), &snap);
+        assert_eq!(report.classification, Classification::UnverifiedForecast);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("protocol version was not supplied")),
+            "warnings: {:?}",
+            report.warnings
         );
     }
 

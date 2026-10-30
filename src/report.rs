@@ -365,6 +365,9 @@ fn build_evidence(
     if snapshot.base_reserve_stroops.is_none() {
         limitations.push("base reserve evidence is unavailable".to_owned());
     }
+    if snapshot.protocol_version.is_none() {
+        limitations.push("protocol version evidence is unavailable".to_owned());
+    }
     if matches!(
         engine_report.classification,
         Classification::UnverifiedForecast
@@ -572,6 +575,8 @@ fn warning_code(message: &str) -> &'static str {
         "W_POOL_DELETION_UNFORECAST"
     } else if message.contains("not independently verified") {
         "W_UNVERIFIED_DISCOVERY"
+    } else if message.contains("protocol version was not supplied") {
+        "W_PROTOCOL_UNVERIFIED"
     } else {
         "W_ENGINE"
     }

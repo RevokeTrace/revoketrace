@@ -23,7 +23,7 @@ Audit date: 2026-10-30. The audit baseline was `main` at `55a5b94861ae3ef10ca91c
 
 The source review is pinned to Stellar Core `05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4`. The crate is locked to `stellar-xdr` 28.0.1 and Rust 1.97.1. The Core pin documents semantics; the XDR crate supplies generated types; tests cover the implemented operation subset. They are different forms of evidence. A newer Core or XDR release needs an explicit compatibility review before support is claimed.
 
-Live mode checks a header-derived protocol version and rejects versions below 18. The release does not assert an open-ended upper protocol range or compatibility with future ledger changes. [Compatibility research](../research/compatibility-matrix.md) preserves the original source-review details.
+Offline snapshots, live ledger headers, and stored captures are checked against one policy in `src/protocol.rs`. Versions 18 to 29 are evaluated. Versions below 18 and above 29 are refused as `UNSUPPORTED`. The upper bound exists because the pinned XDR decoder cannot parse protocol 30 ledger headers. The range is a source-review boundary: the repository records no protocol version for any real ledger it captured, so it does not claim a version was observed live. See the [protocol support decision](../research/protocol-support-decision.md) for the evidence by version. The v1.0.0 release itself only enforces the lower bound. [Compatibility research](../research/compatibility-matrix.md) preserves the original source-review details.
 
 ## Audit findings at the starting baseline
 

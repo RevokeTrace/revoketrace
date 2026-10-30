@@ -137,7 +137,7 @@ Contains the engine classification, transition, sorted pool redemptions, sorted 
 - `UNVERIFIED_FORECAST`: internally modeled output with unresolved evidence limitations; never a successful transaction preflight.
 - `SUPPORTED_BLOCKED`: the modeled protocol rules identify a supported blocker.
 - `INCONCLUSIVE`: required evidence is missing or contradictory.
-- `UNSUPPORTED`: the operation or protocol is outside the supported scope.
+- `UNSUPPORTED`: the operation or protocol is outside the supported scope. Protocol versions 18 to 29 are evaluated; anything else is refused.
 
 The engine has no independently verified safe-preflight path, so the CLI does not emit a `SUPPORTED_SAFE` result.
 
