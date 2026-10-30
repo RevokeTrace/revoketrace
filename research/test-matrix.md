@@ -1,24 +1,37 @@
-# Phase 1 test matrix
+# Current test and evidence matrix
 
-| ID | Scenario | Expected classification | Expected protocol effect | Phase |
-| --- | --- | --- | --- | --- |
-| T01 | Fully authorized -> maintain-liabilities-only | `UNVERIFIED_FORECAST` | Flags change; no pool redemption | 2 offline + 4 live |
-| T02 | Maintain-liabilities-only -> unauthorized | `UNVERIFIED_FORECAST` or `SUPPORTED_BLOCKED` | Redemption path; possible low reserve | 2 offline + 4 live |
-| T03 | Fully authorized -> unauthorized | same as T02 | Redemption path | 2 offline + 4 live |
-| T04 | Pool share redemption with both nonzero outputs and non-issuer owner | `UNVERIFIED_FORECAST` | Delete pool-share trustline; 2 claimable balances | 2 offline |
-| T05 | Valid pool, one constituent issued by owner | `UNVERIFIED_FORECAST` | Exactly 1 claimable balance | 2 offline |
-| T06 | Valid pool, revoked-asset withdrawal floors to zero and other asset is issued by owner | `UNVERIFIED_FORECAST` | 0 claimable balances | 2 offline |
-| T06a | Nonzero total shares with zero reserve | `INCONCLUSIVE` | Arithmetic-only edge case; not accepted as ledger-reachable | 2 offline |
-| T07 | Owner is issuer of one constituent | `UNVERIFIED_FORECAST` | Skip that asset's claimable balance | 2 offline |
-| T08 | Unsponsored pool trustline | `UNVERIFIED_FORECAST` | Trustor sponsors outputs after deletion | 2 offline |
-| T09 | Sponsored pool trustline | `UNVERIFIED_FORECAST` | Existing sponsor sponsors outputs | 2 offline |
-| T10 | Active sponsorship sandwich with insufficient replacement sponsor balance | `SUPPORTED_BLOCKED` | Low reserve failure | 2 offline |
-| T10a | Unsponsored trustline plus ambiguous active sponsorship context | `INCONCLUSIVE` | Refuse unsupported sponsorship inference | 2 offline |
-| T11 | Active sponsorship sandwich over `UINT32_MAX` accounting limit | `SUPPORTED_BLOCKED` | Too-many-sponsoring failure | 2 offline |
-| T12 | Missing one affected pool trustline or incomplete discovery manifest | `INCONCLUSIVE` | No SAFE result | 2 offline |
-| T13 | Mixed ledger sequences or stale entries | `INCONCLUSIVE` | No SAFE result | 2/3 |
-| T14 | Unsupported Soroban SAC authorization or CAP-0077 freeze | `UNSUPPORTED` | No Classic prediction | 2 |
-| T15 | Exact reserve boundary | `UNVERIFIED_FORECAST` / blocked at one stroop below | Reserve delta is checked with integers | 2 offline |
-| T16 | Overflow/negative/duplicate/malformed XDR | `UNSUPPORTED` or `INCONCLUSIVE` | Refuse input | 2/5 |
+This mapping was reconciled against the source on 2026-10-30. Test names are implementation-level evidence, not a claim that a synthetic fixture or a mock response is a real ledger observation. The test count at the reconciliation run was 153.
 
-The two non-negotiable regression tests are T01 and T02: changing `AUTHORIZED_FLAG` to `AUTHORIZED_TO_MAINTAIN_LIABILITIES_FLAG` must not redeem, while removing maintain-liabilities authorization must enter the redemption path.
+Status values:
+
+- **VERIFIED BY TEST**: a repository test directly exercises the scenario.
+- **VERIFIED BY EXTERNAL EVIDENCE**: a cited real network or protocol-source record supports the claim.
+- **PARTIALLY COVERED**: important behavior is tested, but an identified boundary remains unverified.
+- **UNVERIFIED**: the claim has no adequate test or external evidence.
+- **NOT APPLICABLE**: outside the stated read-only Classic scope.
+
+| Scenario and expected result | Implementation | Exact test or evidence | Case type | Evidence | Status |
+| --- | --- | --- | --- | --- | --- |
+| Authorization remains maintain-liabilities-only, so no forced redemption occurs | `classify_transition` | `maintain_liabilities_transition_does_not_redeem` | Normal boundary | Synthetic unit test; pinned Core review | VERIFIED BY TEST |
+| Removing maintain-liabilities authorization enters forced-redemption modeling | `classify_transition`, `evaluate` | `clearing_maintain_liabilities_enters_redemption_path`, `evaluates_two_claimable_balance_redemption` | Normal/negative boundary | Synthetic unit test | VERIFIED BY TEST |
+| `AllowTrust` cannot change non-authorization flags | operation validation | `allow_trust_cannot_change_non_authorization_flags` | Negative | Synthetic unit test | VERIFIED BY TEST |
+| Clawback-only flag change does not redeem pools | transition masking | `independent_testnet_fixture_clawback_only_change_is_not_forced_redemption` | Negative | Stored real Testnet envelope/result XDR, retrieved 2026-10-27 | VERIFIED BY EXTERNAL EVIDENCE |
+| Canonical decoded pool-ID ordering is deterministic | `evaluate` sorting | `test_deterministic_pool_ordering_observable_difference`, `test_target_failure_mode_4_multiple_affected_pools_deterministic_accumulation` | Normal/boundary | Synthetic unit test | VERIFIED BY TEST |
+| Integer floor withdrawal, zero/one output behavior, overflow and invalid totals fail conservatively | `forecast_amount` | `exact_integer_redemption_uses_floor`, `zero_or_one_claimable_balance_is_not_collapsed_to_two`, `test_target_failure_mode_10_integer_overflow_and_underflow`, `non_zero_shares_in_a_pool_with_zero_total_remain_inconclusive` | Boundary/negative | Synthetic unit test | VERIFIED BY TEST |
+| Zero balance/reserve and pool-share-count boundaries are not silently guessed | pool validation and deletion forecast | `zero_balance_pool_share_trustline_in_empty_pool_is_not_inconclusive`, `zero_total_pool_shares_with_non_zero_reserves_are_inconclusive`, `contradictory_zero_pool_shares_trust_line_count_fails_closed` | Boundary/negative | Synthetic unit test | VERIFIED BY TEST |
+| CAP-0038 pool revoke ID is derived from the XDR preimage | `derive_pool_revoke_claimable_balance_id` | `derives_cap0038_pool_revoke_id_from_xdr_preimage` | Normal | Synthetic known-vector test and pinned Core/CAP review | VERIFIED BY TEST |
+| Pool deletion uses supplied counter evidence and refuses to guess when absent | `pool_will_be_deleted` derivation | `missing_pool_shares_trust_line_count_evidence_leaves_deletion_unforecast`, `pool_deletion_is_forecast_deterministically_when_counter_evidence_is_supplied` | Normal/negative | Synthetic unit test | VERIFIED BY TEST |
+| Reserve, sponsor counters, and sponsorship-handoff ordering produce warnings, blockers, or inconclusive results | reserve and sponsorship accounting | `test_target_failure_mode_1_unsponsored_redemption` through `test_target_failure_mode_13_sponsorship_begin_end_ordering` | Normal/negative/boundary | Synthetic unit tests | VERIFIED BY TEST |
+| Protocol versions below 18 and unsupported operation results remain unsupported | evidence adapter and result mappings | `test_target_failure_mode_14_unsupported_protocol_version`, `test_adversarial_12_unsupported_protocol_version`, `authoritative_result_codes_map_conservatively` | Negative | Synthetic unit tests plus pinned Core source | VERIFIED BY TEST |
+| Missing, duplicate, stale, nonmatching, or contradictory candidate evidence fails closed | discovery and evidence adapters | `test_discovery_missing_candidate`, `test_discovery_duplicate_candidate`, `test_adversarial_1_missing_pool_share_trustline`, `test_adversarial_17_stale_indexer_data` | Negative | Mock Horizon/RPC tests | VERIFIED BY TEST |
+| Ledger-sequence mismatches and torn captures are retried or rejected | live evidence sequence binding | `mismatched_ledger_sequences_are_inconclusive`, `test_adversarial_18_deliberate_mismatched_ledger_sequences_fails_closed`, `test_adversarial_19_bounded_retry_succeeds_when_tip_advances_transiently` | Negative | Mock RPC tests | VERIFIED BY TEST |
+| XDR identity, key correspondence, negative amounts, and sponsorship extensions are validated | `discovery.rs`, `evidence.rs` decoders | `wrong_pool_share_identity_is_rejected`, `negative_pool_balance_and_reserve_are_rejected`, `test_decode_sponsorship_v0_and_v1`, `test_decode_real_testnet_header_xdr` | Negative/normal | Mock and stored header XDR | VERIFIED BY TEST |
+| CLI rejects malformed identities, oversize/malformed files, endpoint credentials, and unsafe output paths | `src/cli.rs` validation and I/O | `rejects_malformed_strkeys_and_asset_codes`, `bounded_input_reader_rejects_invalid_json_and_oversized_files`, `validates_endpoint_credentials_and_queries`, `rejects_unsafe_output_paths` | Negative | Unit tests | VERIFIED BY TEST |
+| No-force output avoids overwrite races; symbolic links and failed installations are safe | `write_atomic` | `atomic_output_refuses_overwrite_and_supports_explicit_force`, `concurrent_no_force_installation_never_overwrites_destination`, `failed_force_installation_preserves_destination_and_cleans_temp`, `symbolic_link_destinations_are_rejected_without_following` | Security negative | Unit tests | VERIFIED BY TEST |
+| CLI exit codes preserve forecast classifications | `exit_code_for_classification` | `exit_codes_keep_forecast_classification_separate_from_execution` | Boundary | Unit test | VERIFIED BY TEST |
+| JSON reports are deterministic and a saved report is envelope-validated only | `ReportDocument`, `execute_inspect` | `deterministic_fixture_reports_have_stable_json`, `report_diagnostic_sorting_is_stable`, `inspect_preserves_saved_report_classification_without_authenticating_provenance`, `inspect_rejects_unsupported_report_schema` | Normal/negative | Unit tests | VERIFIED BY TEST |
+| Live forced redemption covering every modeled effect | live network behavior | No independently verified fixture | External evidence gap | Stored fixture is caller-supplied; available real fixture is clawback-only | UNVERIFIED |
+| Full multi-operation sponsorship handoff behavior | live protocol behavior | No independently verified complete live fixture | External evidence gap | Model and synthetic tests only | PARTIALLY COVERED |
+| Soroban SAC authorization and CAP-0077 validator freeze | excluded scope | [scope](../docs/scope.md) | Out of scope | No implementation | NOT APPLICABLE |
+
+The non-negotiable transition regressions remain the first two rows: moving from `AUTHORIZED_FLAG` to maintain-liabilities-only must not redeem, while removing maintain-liabilities authorization must enter the redemption path. See [the verification index](../docs/verification.md) for the distinction between source review, tests, and external evidence.

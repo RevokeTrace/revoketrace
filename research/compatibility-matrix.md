@@ -1,5 +1,7 @@
 # Protocol and XDR compatibility matrix
 
+> **Historical research notice, 2026-10-27.** This matrix records the feasibility-spike environment and conclusions. Statements about unavailable formatting or Clippy tools, old test totals, or unimplemented version validation are not current release status. The current toolchain, dependency boundary, and supported behavior are recorded in [verification](../docs/verification.md) and [architecture](../docs/architecture.md); the original source references below remain historical evidence.
+
 Research date: 2026-10-27. This is evidence for the feasibility spike, not a production support claim.
 
 ## Pinned inputs and verification

@@ -1,5 +1,7 @@
 # Discovery Feasibility Evaluation: Stored Network-Response Fixture & Live RPC Constraints
 
+> **Historical research notice, 2026-10-27.** This feasibility record predates the released bounded live adapter. References to a prototype, a blocked Phase 2, or unimplemented production behavior are historical. The current adapter remains deliberately bounded and current-tip only; it is not evidence of complete capture. See [architecture](../docs/architecture.md) and [verification](../docs/verification.md).
+
 Research date: 2026-10-27.  
 Scope: Methodological evaluation of pool-share discovery feasibility, distinguishing stored network-response fixtures, live network queries, and offline preflight forecasting.
 

@@ -1,5 +1,7 @@
 # Reserve, Sponsorship, and Operation-Context Audit
 
+> **Historical research notice, 2026-10-27.** This Phase 4B audit predates the later Phase 4C implementation and current test suite. Its gaps and test counts describe the then-current code, not the released status. Current implemented behavior and remaining limits are indexed in [verification](../docs/verification.md); preserve this document as the historical gap analysis.
+
 **Phase:** Phase 4B  
 **Date:** 2026-10-27  
 **Status:** Complete Technical Audit & Protocol Gap Analysis  

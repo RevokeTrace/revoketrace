@@ -1,5 +1,7 @@
 # Phase 4C: Deterministic Forecasting and Protocol Verification
 
+> **Historical verification notice, 2026-10-27.** The pinned Core citations and fixture provenance below remain important evidence. The phase labels, baseline commit, and test totals record that verification session and are not current release status. See [the verification index](../docs/verification.md), [architecture](../docs/architecture.md), and [scope](../docs/scope.md) for the present implementation boundary and unresolved limits.
+
 **Phase:** Phase 4C
 **Date:** 2026-10-27
 **Status:** Independent verification pass against stellar-core source and Stellar Testnet
