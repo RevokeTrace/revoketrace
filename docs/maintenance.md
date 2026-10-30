@@ -8,6 +8,12 @@ Reproduce a reported behavior with the smallest safe input, record the exact com
 
 Review pull requests against [CONTRIBUTING.md](../CONTRIBUTING.md), [scope](scope.md), and [security policy](../SECURITY.md). Pay particular attention to provenance, classification precedence, XDR/key identity, numeric bounds, network and file limits, report output paths, workflow changes, dependencies, release metadata, and any wording that could turn a forecast into an approval claim. Keep one commit per genuine logical unit; do not rewrite published history or add artificial splits, AI co-author trailers, or attribution footers.
 
+## GitHub governance
+
+The 2026-10-30 audit verified active `main` branch protection: pull requests are required, the strict `rust` check is required, conversation resolution and stale-review dismissal are enabled, administrators are included, and force pushes and branch deletion are disabled. GitHub private vulnerability reporting is enabled; its current procedure is in [SECURITY.md](../SECURITY.md).
+
+The configured required-approval count is zero because no independently available reviewer was confirmed during the audit. That is a governance limitation, not evidence that review occurred. When an independent maintainer or reviewer is available, an administrator should require at least one approval and, where the platform supports it, approval of the latest push. Confirm the effective rule in GitHub branch settings and do not infer protection from a green CI run alone.
+
 ## Dependencies and protocol changes
 
 Review dependencies manually. Run advisory checks and the locked test suite before accepting a change. A Rust, `stellar-xdr`, or Stellar Core reference change needs a stated compatibility decision, relevant source/CAP review, and new or updated tests where semantics change. Do not assume a newer generated XDR crate works merely because it is newer. The repository does not use automated dependency-update bots or scheduled update workflows without separate authorization.
