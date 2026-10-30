@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, milestone5-cli-reports]
+    branches: [main]
   pull_request:
 
 jobs:
