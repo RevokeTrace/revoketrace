@@ -309,3 +309,17 @@ fn analyze_output_is_not_labelled_as_a_saved_inspection() {
     assert!(text.contains("Evidence classification: LEDGER_CONSISTENT_INCOMPLETE"));
     assert!(!text.contains("NOT VERIFIED BY REVOKETRACE"));
 }
+
+#[test]
+fn help_describes_inspect_as_unverified_input() {
+    for args in [&["help"][..], &["help", "inspect"][..]] {
+        let output = revoketrace(args);
+        let text = stdout(&output);
+        assert_eq!(output.status.code(), Some(0));
+        assert!(
+            text.contains("unverified, caller-supplied data"),
+            "help output: {}",
+            text
+        );
+    }
+}
