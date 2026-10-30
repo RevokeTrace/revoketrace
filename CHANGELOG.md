@@ -4,6 +4,7 @@
 
 - Protocol policy: versions 18 to 29 are evaluated and any other version is refused as `UNSUPPORTED` (exit code 30), in offline, live, and stored-capture paths. v1.0.0 only enforced the lower bound. A snapshot without a protocol version now carries the warning `W_PROTOCOL_UNVERIFIED`. Rationale and evidence: [protocol support decision](research/protocol-support-decision.md).
 - `inspect` now states that a saved report is caller-supplied, unauthenticated, not recomputed, and not transaction approval. Text output labels copied classifications as saved claims. JSON output is unchanged schema 1, with the notice on standard error.
+- Live endpoints must use `https://`. Plain `http://` is accepted only for loopback hosts. Documented that endpoint URLs are recorded verbatim in live reports.
 
 ## 1.0.0 (published)
 
