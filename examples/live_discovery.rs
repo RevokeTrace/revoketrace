@@ -1,10 +1,10 @@
-//! RevokeTrace Phase 4A: Authoritative Ledger Evidence Adapter Demonstration
+//! RevokeTrace bounded Testnet evidence adapter demonstration
 //!
 //! Demonstrates:
-//! 1. Authoritative Evidence Acquisition via AuthoritativeEvidenceAdapter:
+//! 1. Bounded evidence acquisition via AuthoritativeEvidenceAdapter:
 //!    - Accepts trustor account and revoked credit asset identity without caller pool IDs.
 //!    - Queries Stellar RPC `getLatestLedger`:
-//!      - Decodes `LedgerHeader` (`headerXdr`) to extract authoritative `base_reserve` (5,000,000 stroops).
+//!      - Decodes `LedgerHeader` (`headerXdr`) to extract header-derived `base_reserve` (5,000,000 stroops).
 //!      - Extracts and asserts `protocolVersion >= 18` (Protocol 29 on Testnet).
 //!      - Validates ledger hash format (64-char hex) and binds sequence to entry batch.
 //!    - Queries Horizon `GET /accounts/{trustor}` to enumerate candidate liquidity-pool share IDs.
@@ -18,7 +18,7 @@
 //!    - Derived property classification: `BoundedCurrentTipRpc` (bounded candidate set, not complete export).
 //!    - CompleteAuthoritativeLedger is unreachable for caller-supplied snapshots; caller attempts to promote authority are refused.
 //! 3. Preflight Forecast Evaluation:
-//!    - Snapshot contains authoritative `base_reserve_stroops: Some(5_000_000)`.
+//!    - Snapshot contains header-derived `base_reserve_stroops: Some(5_000_000)`.
 //!    - Evaluates preflight forecast: `UnverifiedForecast` maximum (`SupportedSafe` unreachable).
 //! 4. Fail-Closed Adversarial Guarantees across all failure modes (sequence torn states, missing reserves, forged claims).
 //!
@@ -33,7 +33,7 @@ use revoketrace_spike::{
 
 fn main() {
     println!("============================================================");
-    println!("   RevokeTrace Phase 4A: Authoritative Ledger Evidence Demo ");
+    println!("   RevokeTrace Bounded Testnet Evidence Demo ");
     println!("============================================================\n");
 
     let network_passphrase = "Test SDF Network ; September 2015";
@@ -52,7 +52,7 @@ fn main() {
     println!("Revoked Asset: {}:{}", asset.code, asset.issuer);
     println!("(Notice: No candidate pool IDs are supplied by the caller)\n");
 
-    println!("--- Step 1: Executing Live Authoritative Evidence Adapter ---");
+    println!("--- Step 1: Executing Live Bounded Evidence Adapter ---");
     println!(
         "RPC Endpoint (getLatestLedger + getLedgerEntries): {}",
         rpc_url
@@ -72,7 +72,7 @@ fn main() {
                 snapshot.protocol_version
             );
             println!(
-                "  Authoritative Base Reserve: {:?} stroops",
+                "  Header-derived Base Reserve: {:?} stroops",
                 snapshot.base_reserve_stroops
             );
             println!(
@@ -304,7 +304,7 @@ fn main() {
     println!("============================================================");
     println!("Summary:");
     println!(
-        "  1. Authoritative base reserve and protocol version extracted from LedgerHeader (headerXdr)."
+        "  1. Header-derived base reserve and protocol version extracted from LedgerHeader (headerXdr)."
     );
     println!("  2. Entry-level sponsorship descriptors extracted from LedgerEntryExt (extXdr).");
     println!("  3. On-chain counter reconciliation ($K == N$) mathematically verified.");

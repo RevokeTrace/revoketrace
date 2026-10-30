@@ -1,6 +1,6 @@
 # RevokeTrace CLI
 
-This is the command-line documentation entry point. RevokeTrace is local, read-only software: it evaluates evidence already supplied by the caller or acquired through the bounded Testnet adapter. It does not sign, construct, broadcast, or repair Stellar transactions.
+This is the command-line documentation entry point. RevokeTrace is local, read-only software: it evaluates evidence already supplied by the caller or acquired through the bounded Testnet adapter. It does not sign, construct, broadcast, or repair Stellar transactions. See [the scope document](scope.md) for the project boundary and [the protocol research](../research/phase4c-protocol-verification.md) for source and fixture provenance.
 
 ## Commands
 
@@ -10,7 +10,7 @@ Prints the CLI version. `revoketrace help` and `revoketrace help <command>` prin
 
 ### `revoketrace analyze`
 
-Analyzes a local JSON `Snapshot`, or an `AuthoritativeCaptureArtifact` containing a snapshot. The file is bounded to 8 MiB and is never sent to a network service. Caller-supplied authority labels are not promoted; the existing evidence adapter derives the evidence classification from snapshot properties.
+Analyzes a local JSON `Snapshot`, or a caller-supplied `AuthoritativeCaptureArtifact` containing a snapshot. The file is bounded to 8 MiB and is never sent to a network service. The artifact name does not make its contents authoritative. Caller-supplied authority labels are not promoted; the existing evidence adapter derives the evidence classification from snapshot properties.
 
 Required options:
 
@@ -163,4 +163,4 @@ Exit status describes the CLI result, not a promise that a Stellar transaction w
 - `SUPPORTED_SAFE` is unreachable until an independent authoritative capture verifier exists.
 - Pool deletion is forecast only when verified `poolSharesTrustLineCount` evidence is present and coherent.
 - Full historical ledger indexing, database storage, dashboards, signing, transaction broadcasting, Soroban authorization interception, and automatic repair are out of scope.
-- The CLI has been tested with fixture-backed offline invocations. A live result depends on current Testnet availability and is not fabricated when the network is unavailable.
+- Live results depend on current Testnet availability and are observations of bounded current-tip evidence. They are not fabricated when the network is unavailable and are never presented as historical completeness or transaction success.

@@ -1,4 +1,4 @@
-//! Authoritative Ledger Evidence Adapter and Strict Trust Model (Phase 4A)
+//! Bounded Ledger Evidence Adapter and Strict Trust Model
 //!
 //! Provides:
 //! 1. Strictly property-derived Evidence Classification:
@@ -7,10 +7,10 @@
 //!    - `LedgerConsistentIncomplete`
 //!    - `CompleteAuthoritativeLedger`
 //!    - `InvalidOrContradictory`
-//! 2. Authoritative Evidence Adapter:
+//! 2. Bounded Evidence Adapter:
 //!    - Read-only queries to `getLatestLedger` and `getLedgerEntries`
-//!    - Authoritative `base_reserve` and `protocolVersion` extraction from `LedgerHeader` (`headerXdr`)
-//!    - Authoritative entry-level `sponsoring_id` extraction from `LedgerEntryExt` (`extXdr`)
+//!    - Header-derived `base_reserve` and `protocolVersion` extraction from `LedgerHeader` (`headerXdr`)
+//!    - Entry-level `sponsoring_id` extraction from `LedgerEntryExt` (`extXdr`)
 //!    - Strict canonical CAP-0038 pool-ID verification and on-chain counter reconciliation
 //!    - Property-derived classification that refuses caller-forged metadata
 //! 3. Structured Capture Artifact for offline reproducibility.
@@ -144,7 +144,7 @@ pub struct AuthoritativeCaptureArtifact {
 }
 
 // ---------------------------------------------------------------------------
-// Authoritative Evidence Adapter
+// Bounded Evidence Adapter
 // ---------------------------------------------------------------------------
 
 pub struct AuthoritativeEvidenceAdapter<T: HttpTransport> {
@@ -169,10 +169,10 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
     }
 
-    /// Acquires and verifies authoritative ledger evidence at the current ledger close.
+    /// Acquires and verifies bounded current-tip ledger evidence.
     ///
     /// Combines:
-    /// 1. `getLatestLedger` to extract authoritative `base_reserve` and `protocolVersion` from `LedgerHeader`.
+    /// 1. `getLatestLedger` to extract header-derived `base_reserve` and `protocolVersion` from `LedgerHeader`.
     /// 2. Horizon candidate enumeration for blind pool discovery.
     /// 3. Atomic single-batch `getLedgerEntries` with both `xdr` and `extXdr` decoding to extract entry sponsorship.
     /// 4. Cryptographic derivation of canonical pool IDs and reconciliation with `liquidityPoolUseCount`.
@@ -693,7 +693,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
             }
         };
 
-        // Parse Credit Trustline and Extract Authoritative Sponsorship
+        // Parse Credit Trustline and Extract RPC Sponsorship
         let credit_tl_entry = entry_map.get(&key_credit_tl).ok_or_else(|| {
             DiscoveryError::MissingCreditTrustline(format!("{}:{}", asset.code, asset.issuer))
         })?;

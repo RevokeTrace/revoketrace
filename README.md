@@ -1,8 +1,10 @@
 # RevokeTrace
 
-RevokeTrace is a read-only Rust CLI and forecasting engine for Stellar Classic issuer authorization changes. It evaluates supplied ledger evidence and forecasts CAP-0038 liquidity-pool redemption effects; it never signs, constructs, broadcasts, or repairs transactions.
+RevokeTrace is a read-only Rust CLI and forecasting engine for Stellar Classic issuer authorization changes. It evaluates supplied ledger evidence and forecasts CAP-0038 liquidity-pool redemption effects. It never signs, constructs, broadcasts, or repairs transactions.
 
-The CLI documentation entry point is [docs/cli.md](docs/cli.md). It contains the command reference, versioned JSON schema, exit codes, security boundaries, and known limitations.
+It is useful to Stellar issuers, protocol researchers, and maintainers investigating what an authorization change may do to affected liquidity-pool positions. It reports modeled withdrawals, claimable-balance effects, sponsorship and reserve deltas, and evidence limitations. It does not prove that a transaction will succeed or that a supplied snapshot is a complete ledger view.
+
+Start with the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
 
 Report files are written through an exclusively created, flushed temporary file.
 Without `--force`, the final installation is atomic and no-replace; an existing or
@@ -20,6 +22,16 @@ cargo build --release --locked --bin revoketrace
 ```
 
 Use `cargo run --locked --bin revoketrace -- ...` when running directly from the checkout.
+
+The project has no network requirement for offline analysis. Live mode is an optional bounded Stellar Testnet observation and requires reachable Horizon and RPC endpoints.
+
+## What the CLI helps investigate
+
+`analyze` evaluates a caller-supplied snapshot without contacting the network. `live` obtains a bounded current-tip Testnet snapshot through the existing adapter. `inspect` reads a saved versioned report without authenticating or recomputing it.
+
+The engine can model CAP-0038 pool redemptions, integer withdrawal amounts, claimable-balance IDs when complete operation context is supplied, clawback flags, sponsorship, reserve effects, and pool-deletion counters when the relevant evidence is present. It also identifies missing or contradictory evidence.
+
+`UNVERIFIED_FORECAST` means that the supplied data passed the modeled checks but is not a transaction approval. `SUPPORTED_BLOCKED` means that a modeled supported precondition or reserve/sponsorship limit fails. `SUPPORTED_SAFE` is not emitted. Bounded current-tip discovery cannot prove exhaustive or historical ledger coverage.
 
 ## Offline analysis
 
@@ -57,7 +69,7 @@ cargo run --locked --bin revoketrace -- analyze \
 Inspect a saved report with:
 
 ```bash
-revoketrace inspect --report report.json
+cargo run --locked --bin revoketrace -- inspect --report report.json
 ```
 
 ## Bounded live Testnet analysis
@@ -93,8 +105,20 @@ The command does not sign or submit the requested authorization change. Network 
 | 60 | Report output failure. |
 | 70 | Internal error. |
 
+## Protocol evidence and fixtures
+
+The [protocol research index](research/phase4c-protocol-verification.md) links the pinned Stellar Core source review, CAP references, the real flag-only Testnet fixture, and the remaining unverified cases. The [discovery feasibility record](research/discovery-feasibility-proof.md) distinguishes live observations, stored network-response captures, and synthetic fixtures. CAP-0038 edge cases are under [fixtures/cap0038](fixtures/cap0038/).
+
+Stored and synthetic fixtures are not interchangeable with independently verified ledger evidence. The repository does not claim a live forced-redemption transaction, full historical capture, or complete multi-operation sponsorship verification.
+
+## Development and contribution
+
+Run the locked test and lint commands before submitting a change. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the pinned toolchain, fixture and protocol-evidence requirements, commit practice, and review expectations. Report security vulnerabilities using the process in [SECURITY.md](SECURITY.md). Do not put exploit details in a public issue.
+
 ## Dependencies and repository policy
 
-Milestone 5 adds no dependencies. Reports use the existing `serde`/`serde_json` stack, and the repository continues to use `Cargo.lock` with locked builds. Dependency updates remain manually reviewed; no automated dependency-update bot or scheduled update workflow is used.
+Reports use the existing `serde` and `serde_json` stack, and the repository continues to use `Cargo.lock` with locked builds. Dependency updates remain manually reviewed. No automated dependency-update bot or scheduled update workflow is used.
 
-CI runs formatting, locked tests, and locked clippy checks. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.
+The project declares the MIT license. See [LICENSE](LICENSE).
+
+CI runs formatting, locked tests, the release binary build, and strict locked Clippy checks. Rust documentation and `cargo audit` are useful local checks but are not currently CI jobs. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.

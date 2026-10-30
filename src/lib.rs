@@ -1,9 +1,10 @@
-//! Deterministic offline engine for the first RevokeTrace implementation slice.
+//! RevokeTrace's deterministic forecasting engine and bounded evidence adapters.
 //!
-//! Network capture, discovery, signing, and submission are intentionally not
-//! part of this crate yet. The engine only evaluates a complete immutable
-//! snapshot supplied by its caller and fails closed when completeness cannot
-//! be established.
+//! Offline evaluation uses immutable caller-supplied snapshots. The discovery
+//! and evidence modules provide read-only bounded current-tip acquisition and
+//! strict property-derived classifications. Neither path signs, constructs,
+//! broadcasts, or repairs Stellar transactions, and incomplete evidence fails
+//! closed rather than becoming an authoritative or safe result.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
