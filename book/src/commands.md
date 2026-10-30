@@ -4,7 +4,7 @@
 | --- | --- |
 | `analyze` | Evaluate a caller-supplied offline snapshot |
 | `live` | Acquire bounded current-tip Testnet evidence and forecast |
-| `inspect` | Read a saved report envelope without authenticating it |
+| `inspect` | Read a saved report envelope without authenticating it; output is labelled as unverified caller-supplied data |
 | `version` | Print CLI version |
 | `help` | Display usage |
 
