@@ -28,7 +28,7 @@ use crate::discovery::{
 use crate::{
     AccountState, CreditAsset, CreditTrustlineState, DiscoveryCoverage, DiscoveryProof,
     DiscoverySource, PoolShareState, Snapshot, derive_constant_product_pool_id,
-    discovery_manifest_sha256,
+    discovery_manifest_sha256, protocol,
 };
 
 /// Strict classifications for ledger evidence in RevokeTrace.
@@ -92,6 +92,19 @@ pub struct LatestLedgerResponse {
 // ---------------------------------------------------------------------------
 
 /// Decodes base64-encoded `headerXdr` into a `stellar_xdr::curr::LedgerHeader`.
+/// Applies the central protocol support policy to an observed version.
+fn check_protocol_version(version: u32) -> Result<(), DiscoveryError> {
+    if protocol::is_reviewed_protocol_version(version) {
+        Ok(())
+    } else {
+        Err(DiscoveryError::UnsupportedProtocolVersion {
+            version,
+            minimum: protocol::MIN_SUPPORTED_PROTOCOL_VERSION,
+            maximum: protocol::MAX_REVIEWED_PROTOCOL_VERSION,
+        })
+    }
+}
+
 pub fn decode_ledger_header(header_xdr: &str) -> Result<LedgerHeader, DiscoveryError> {
     LedgerHeader::from_xdr_base64(header_xdr, Limits::none()).map_err(|e| {
         DiscoveryError::ParseError(format!("failed to decode LedgerHeader XDR: {}", e))
@@ -473,6 +486,12 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                 )));
             }
 
+            // Apply the protocol policy to the version the RPC reports before
+            // decoding anything. A header from an unreviewed protocol (for
+            // example protocol 30, which the pinned decoder cannot parse) must
+            // be refused as unsupported, not fail as a decode error.
+            check_protocol_version(latest_ledger_result.protocol_version)?;
+
             // Decode LedgerHeader from headerXdr
             let header = decode_ledger_header(&latest_ledger_result.header_xdr)?;
             if header.ledger_seq != latest_ledger_result.sequence {
@@ -481,14 +500,17 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
                     snapshot_seq: latest_ledger_result.sequence,
                 });
             }
-
-            let protocol_version = header.ledger_version;
-            if protocol_version < 18 {
-                return Err(DiscoveryError::UnsupportedProtocolVersion {
-                    version: protocol_version,
-                    minimum: 18,
+            // The decoded header is the evidence; the RPC field is only a hint.
+            // Disagreement means the response contradicts itself.
+            if header.ledger_version != latest_ledger_result.protocol_version {
+                return Err(DiscoveryError::InconsistentProtocolVersion {
+                    rpc: latest_ledger_result.protocol_version,
+                    header: header.ledger_version,
                 });
             }
+
+            let protocol_version = header.ledger_version;
+            check_protocol_version(protocol_version)?;
 
             let base_reserve_stroops = header.base_reserve as u64;
             if base_reserve_stroops == 0 {
@@ -548,12 +570,7 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         })?;
 
         let protocol_version = header.ledger_version;
-        if protocol_version < 18 {
-            return Err(DiscoveryError::UnsupportedProtocolVersion {
-                version: protocol_version,
-                minimum: 18,
-            });
-        }
+        check_protocol_version(protocol_version)?;
 
         let base_reserve_stroops = header.base_reserve as u64;
         if base_reserve_stroops == 0 {
@@ -1119,13 +1136,8 @@ impl<T: HttpTransport> AuthoritativeEvidenceAdapter<T> {
         }
 
         // 4. Protocol Version
-        if let Some(proto) = snapshot.protocol_version
-            && proto < 18
-        {
-            return Err(DiscoveryError::UnsupportedProtocolVersion {
-                version: proto,
-                minimum: 18,
-            });
+        if let Some(proto) = snapshot.protocol_version {
+            check_protocol_version(proto)?;
         }
 
         // 5. Canonical Pool ID verification
@@ -2486,10 +2498,252 @@ mod tests {
             err,
             DiscoveryError::UnsupportedProtocolVersion {
                 version: 17,
-                minimum: 18
+                minimum: 18,
+                maximum: 29
             }
         ));
         assert_eq!(err.into_classification(), Classification::Unsupported);
+    }
+
+    #[test]
+    fn live_header_above_reviewed_protocol_range_is_unsupported() {
+        // Protocol 30 is the first version whose ledger header may use
+        // millisecond StellarValue arms the pinned decoder cannot parse; it is
+        // outside the reviewed range whether or not the header decodes.
+        for version in [
+            protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1,
+            protocol::MAX_REVIEWED_PROTOCOL_VERSION + 2,
+        ] {
+            let mut mock = MockTransport::new();
+            mock.set_get(
+                format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+                Ok(serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": [] }).to_string()),
+            );
+            mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": version, "sequence": 5000, "headerXdr": make_header_xdr(version, 5000, 5_000_000) }
+            }).to_string()));
+            let adapter = AuthoritativeEvidenceAdapter::new(
+                mock,
+                "https://horizon.example",
+                "https://rpc.example",
+                NETWORK_PASSPHRASE,
+            );
+            let err = adapter
+                .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    DiscoveryError::UnsupportedProtocolVersion {
+                        minimum: 18,
+                        maximum: 29,
+                        ..
+                    }
+                ),
+                "protocol {} produced {:?}",
+                version,
+                err
+            );
+            assert_eq!(err.into_classification(), Classification::Unsupported);
+        }
+    }
+
+    fn adapter_with(mock: MockTransport) -> AuthoritativeEvidenceAdapter<MockTransport> {
+        AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        )
+    }
+
+    fn mock_with_empty_horizon() -> MockTransport {
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": [] }).to_string()),
+        );
+        mock
+    }
+
+    fn base64_encode(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            out.push(TABLE[(n >> 18) as usize & 63] as char);
+            out.push(TABLE[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// A header shaped like a protocol 30 header: Core selects the
+    /// `STELLAR_VALUE_SIGNED_MS` arm (discriminant 3) of `StellarValue.ext`,
+    /// which the pinned `stellar-xdr` 28.0.1 cannot decode.
+    fn make_protocol_30_style_header_xdr(seq: u32) -> String {
+        use stellar_xdr::WriteXdr;
+        let valid = make_header_xdr(30, seq, 5_000_000);
+        let mut bytes = {
+            use stellar_xdr::ReadXdr;
+            LedgerHeader::from_xdr_base64(&valid, Limits::none())
+                .unwrap()
+                .to_xdr(Limits::none())
+                .unwrap()
+        };
+        // ledgerVersion(4) + previousLedgerHash(32) + txSetHash(32)
+        // + closeTime(8) + upgrades length(4) = offset of ext discriminant.
+        let offset = 4 + 32 + 32 + 8 + 4;
+        bytes[offset..offset + 4].copy_from_slice(&3_u32.to_be_bytes());
+        base64_encode(&bytes)
+    }
+
+    fn latest_ledger_body(rpc_version: u32, header_xdr: &str) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {
+                "id": MOCK_LEDGER_HASH, "protocolVersion": rpc_version,
+                "sequence": 5000, "headerXdr": header_xdr
+            }
+        })
+        .to_string()
+    }
+
+    fn acquire_with_latest_ledger(body: String) -> DiscoveryError {
+        let mut mock = mock_with_empty_horizon();
+        mock.set_post_method("getLatestLedger", Ok(body));
+        adapter_with(mock)
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err()
+    }
+
+    #[test]
+    fn protocol_30_style_header_cannot_be_decoded_by_the_pinned_crate() {
+        // Guards the premise of the upper bound: if this ever decodes, the
+        // protocol support decision must be revisited.
+        let header = make_protocol_30_style_header_xdr(5000);
+        assert!(decode_ledger_header(&header).is_err());
+    }
+
+    #[test]
+    fn unsupported_rpc_protocol_is_refused_before_the_header_is_decoded() {
+        let undecodable = make_protocol_30_style_header_xdr(5000);
+        for (rpc_version, header) in [
+            (30, undecodable.as_str()),
+            (30, "not-base64-xdr!!"),
+            (u32::MAX, ""),
+            (17, "not-base64-xdr!!"),
+        ] {
+            let err = acquire_with_latest_ledger(latest_ledger_body(rpc_version, header));
+            assert!(
+                matches!(
+                    err,
+                    DiscoveryError::UnsupportedProtocolVersion {
+                        version,
+                        minimum: 18,
+                        maximum: 29
+                    } if version == rpc_version
+                ),
+                "rpc {} produced {:?}",
+                rpc_version,
+                err
+            );
+            assert_eq!(err.into_classification(), Classification::Unsupported);
+        }
+    }
+
+    #[test]
+    fn malformed_header_with_a_supported_rpc_version_is_a_parse_error() {
+        for header in ["", "not-base64-xdr!!", "AAAA"] {
+            let err = acquire_with_latest_ledger(latest_ledger_body(29, header));
+            assert!(
+                matches!(err, DiscoveryError::ParseError(_)),
+                "header {:?} produced {:?}",
+                header,
+                err
+            );
+        }
+        // A header that only the newer protocol could produce is also malformed
+        // from the point of view of a supported version.
+        let err = acquire_with_latest_ledger(latest_ledger_body(
+            29,
+            &make_protocol_30_style_header_xdr(5000),
+        ));
+        assert!(matches!(err, DiscoveryError::ParseError(_)), "{:?}", err);
+    }
+
+    #[test]
+    fn rpc_and_header_protocol_versions_must_agree() {
+        for (rpc_version, header_version) in [(28, 29), (29, 28), (29, 30), (18, 29)] {
+            let err = acquire_with_latest_ledger(latest_ledger_body(
+                rpc_version,
+                &make_header_xdr(header_version, 5000, 5_000_000),
+            ));
+            assert!(
+                matches!(
+                    err,
+                    DiscoveryError::InconsistentProtocolVersion { rpc, header }
+                        if rpc == rpc_version && header == header_version
+                ),
+                "rpc {} header {} produced {:?}",
+                rpc_version,
+                header_version,
+                err
+            );
+            assert_eq!(err.into_classification(), Classification::Inconclusive);
+        }
+    }
+
+    #[test]
+    fn agreeing_supported_versions_pass_the_protocol_checks() {
+        // 18 and 29 are the range edges. The request then fails later, on the
+        // missing ledger entries mock, which shows the protocol checks passed.
+        for version in [18, 29] {
+            let err = acquire_with_latest_ledger(latest_ledger_body(
+                version,
+                &make_header_xdr(version, 5000, 5_000_000),
+            ));
+            assert!(
+                !matches!(
+                    err,
+                    DiscoveryError::UnsupportedProtocolVersion { .. }
+                        | DiscoveryError::InconsistentProtocolVersion { .. }
+                ),
+                "version {} produced {:?}",
+                version,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn stored_capture_with_unreviewed_protocol_is_refused_before_classification() {
+        let mut snapshot: Snapshot =
+            serde_json::from_slice(include_bytes!("../fixtures/live-testnet-discovery.json"))
+                .expect("fixture snapshot");
+        snapshot.protocol_version = Some(protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1);
+        let err = AuthoritativeEvidenceAdapter::<MockTransport>::validate_and_classify(&snapshot)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DiscoveryError::UnsupportedProtocolVersion { version: 30, .. }
+        ));
     }
 
     #[test]
