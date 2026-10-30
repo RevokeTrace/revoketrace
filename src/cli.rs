@@ -638,12 +638,16 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
             label
         )));
     }
-    let rest = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-        .ok_or_else(|| {
-            CliError::invalid(format!("{} endpoint must use http:// or https://", label))
-        })?;
+    let (rest, cleartext) = if let Some(rest) = value.strip_prefix("https://") {
+        (rest, false)
+    } else if let Some(rest) = value.strip_prefix("http://") {
+        (rest, true)
+    } else {
+        return Err(CliError::invalid(format!(
+            "{} endpoint must use https://",
+            label
+        )));
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.is_empty() || authority.contains('@') || authority.contains('%') {
         return Err(CliError::invalid(format!(
@@ -693,7 +697,19 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
             label
         )));
     }
+    // TLS is the only protection for RPC and Horizon responses, so cleartext
+    // HTTP is limited to a local endpoint such as a loopback proxy.
+    if cleartext && !is_loopback_host(host) {
+        return Err(CliError::invalid(format!(
+            "{} endpoint must use https:// unless it targets a loopback host",
+            label
+        )));
+    }
     Ok(())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    crate::discovery::is_loopback_host(host)
 }
 
 fn validate_port(label: &str, port: &str) -> Result<(), CliError> {
@@ -1419,6 +1435,43 @@ mod tests {
         assert!(validate_endpoint("RPC", "https://example.test/rpc").is_ok());
         assert!(validate_endpoint("RPC", "https://user:secret@example.test").is_err());
         assert!(validate_endpoint("RPC", "https://example.test?token=secret").is_err());
+    }
+
+    #[test]
+    fn cleartext_http_endpoints_are_limited_to_loopback_hosts() {
+        for accepted in [
+            "https://horizon-testnet.stellar.org",
+            "https://example.test:8443/rpc",
+            "http://localhost:8000",
+            "http://LOCALHOST/rpc",
+            "http://127.0.0.1:8000",
+            "http://[::1]:8000",
+        ] {
+            assert!(
+                validate_endpoint("RPC", accepted).is_ok(),
+                "should accept {}",
+                accepted
+            );
+        }
+        for rejected in [
+            "http://example.test",
+            "http://horizon-testnet.stellar.org",
+            "http://127.0.0.1.example.test",
+            "http://localhost.example.test",
+            "http://10.0.0.5:8000",
+            "ftp://example.test",
+            "example.test",
+        ] {
+            assert!(
+                validate_endpoint("RPC", rejected).is_err(),
+                "should reject {}",
+                rejected
+            );
+        }
+        let message = validate_endpoint("RPC", "http://example.test")
+            .unwrap_err()
+            .message;
+        assert!(message.contains("https://"), "{}", message);
     }
 
     #[test]

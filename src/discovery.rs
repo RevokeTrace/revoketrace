@@ -350,39 +350,130 @@ fn collect_curl_output(mut command: Command, action: &str) -> Result<String, Dis
     })
 }
 
+/// True for the hosts where plain HTTP is allowed: the local machine only.
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+/// Splits a URL into its scheme and host. Returns `None` when it has neither.
+fn scheme_and_host(url: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split(']').next()?
+    } else {
+        authority.split(':').next()?
+    };
+    (!host.is_empty()).then_some((scheme, host))
+}
+
+/// The protocol list curl is allowed to use for `url`: HTTPS, or plain HTTP
+/// for a loopback host only. Everything else (including `file://`, `ftp://`,
+/// and cleartext to a remote host) is refused before curl starts.
+fn allowed_protocol(url: &str) -> Result<&'static str, DiscoveryError> {
+    match scheme_and_host(url) {
+        Some((scheme, _)) if scheme.eq_ignore_ascii_case("https") => Ok("=https"),
+        Some((scheme, host)) if scheme.eq_ignore_ascii_case("http") && is_loopback_host(host) => {
+            Ok("=http")
+        }
+        Some((scheme, _)) if scheme.eq_ignore_ascii_case("http") => {
+            Err(DiscoveryError::TransportError(
+                "refusing cleartext http:// to a non-loopback host".to_owned(),
+            ))
+        }
+        _ => Err(DiscoveryError::TransportError(
+            "refusing a URL that is not https:// or loopback http://".to_owned(),
+        )),
+    }
+}
+
+/// Arguments shared by every request.
+///
+/// - `-q` must be first. It stops curl reading `.curlrc` or `$CURL_HOME`
+///   configuration, which could add redirect following, disable certificate
+///   checks, or change the output.
+/// - `--proto` and `--proto-redir` are enforced by curl itself, so a redirect
+///   cannot move a request to another protocol. Redirects are also not followed.
+/// - `-w` appends the HTTP status after the body so it can be checked.
+/// - `-g` turns off URL globbing, and `--url` keeps the URL from being read as
+///   an option.
+///
+/// Proxy and CA environment variables are still honored. They belong to the
+/// operator's trusted environment, and they cannot turn off certificate
+/// verification.
+fn curl_args(url: &str, timeout_secs: u32) -> Result<Vec<String>, DiscoveryError> {
+    let protocol = allowed_protocol(url)?;
+    let mut args: Vec<String> = [
+        "-q",
+        "-s",
+        "-g",
+        "--proto",
+        protocol,
+        "--proto-redir",
+        protocol,
+        "--max-redirs",
+        "0",
+        "--max-time",
+    ]
+    .iter()
+    .map(|arg| (*arg).to_owned())
+    .collect();
+    args.push(timeout_secs.to_string());
+    if protocol == "=https" {
+        args.push("--tlsv1.2".to_owned());
+    }
+    args.extend(
+        ["-w", "\n%{http_code}", "-H", DISCOVERY_USER_AGENT_HEADER]
+            .iter()
+            .map(|arg| (*arg).to_owned()),
+    );
+    Ok(args)
+}
+
+/// Removes the status line added by `-w` and turns a non-success status into
+/// an error without using the response body.
+fn take_http_status(raw: String, action: &str) -> Result<String, DiscoveryError> {
+    let (body, code) = raw.rsplit_once('\n').ok_or_else(|| {
+        DiscoveryError::TransportError(format!("curl {} returned no HTTP status", action))
+    })?;
+    let status: u16 = code.trim().parse().map_err(|_| {
+        DiscoveryError::TransportError(format!("curl {} returned an invalid HTTP status", action))
+    })?;
+    match status {
+        200..=299 => Ok(body.to_owned()),
+        429 => Err(DiscoveryError::TransportError(format!(
+            "curl {} received HTTP 429 (rate limited)",
+            action
+        ))),
+        300..=399 => Err(DiscoveryError::TransportError(format!(
+            "curl {} received HTTP {} (redirects are not followed)",
+            action, status
+        ))),
+        _ => Err(DiscoveryError::TransportError(format!(
+            "curl {} received HTTP {}",
+            action, status
+        ))),
+    }
+}
+
 impl HttpTransport for CurlTransport {
     fn post(&self, url: &str, body: &str) -> Result<String, DiscoveryError> {
-        let timeout_str = self.timeout_secs.to_string();
         let mut command = Command::new("curl");
         command
-            .arg("-s")
-            .arg("-X")
-            .arg("POST")
-            .arg(url)
-            .arg("-H")
-            .arg("Content-Type: application/json")
-            .arg("-H")
-            .arg(DISCOVERY_USER_AGENT_HEADER)
-            .arg("--max-time")
-            .arg(&timeout_str)
-            .arg("-d")
-            .arg(body);
-        collect_curl_output(command, "post")
+            .args(curl_args(url, self.timeout_secs)?)
+            .args(["-X", "POST", "-H", "Content-Type: application/json"])
+            .args(["--data-raw", body])
+            .args(["--url", url]);
+        take_http_status(collect_curl_output(command, "post")?, "post")
     }
 
     fn get(&self, url: &str) -> Result<String, DiscoveryError> {
-        let timeout_str = self.timeout_secs.to_string();
         let mut command = Command::new("curl");
         command
-            .arg("-s")
-            .arg("-X")
-            .arg("GET")
-            .arg(url)
-            .arg("-H")
-            .arg(DISCOVERY_USER_AGENT_HEADER)
-            .arg("--max-time")
-            .arg(&timeout_str);
-        collect_curl_output(command, "get")
+            .args(curl_args(url, self.timeout_secs)?)
+            .args(["-X", "GET"])
+            .args(["--url", url]);
+        take_http_status(collect_curl_output(command, "get")?, "get")
     }
 }
 
@@ -2608,6 +2699,84 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DiscoveryError::TransportError(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    // -----------------------------------------------------------------------
+    // curl transport policy
+    // -----------------------------------------------------------------------
+    #[test]
+    fn curl_arguments_disable_config_and_limit_protocols() {
+        let https = curl_args("https://horizon.example/accounts/G", 15).unwrap();
+        assert_eq!(https[0], "-q", "-q must be the first argument");
+        let pair = |args: &[String], flag: &str| -> String {
+            let index = args.iter().position(|a| a == flag).expect(flag);
+            args[index + 1].clone()
+        };
+        assert_eq!(pair(&https, "--proto"), "=https");
+        assert_eq!(pair(&https, "--proto-redir"), "=https");
+        assert_eq!(pair(&https, "--max-redirs"), "0");
+        assert_eq!(pair(&https, "--max-time"), "15");
+        assert!(https.contains(&"--tlsv1.2".to_owned()));
+        assert!(https.contains(&"-g".to_owned()));
+        assert!(!https.contains(&"-L".to_owned()));
+        assert!(!https.iter().any(|a| a == "-k" || a == "--insecure"));
+
+        for loopback in [
+            "http://localhost:8000/x",
+            "http://127.0.0.1:8000/x",
+            "http://[::1]:8000/x",
+        ] {
+            let args = curl_args(loopback, 15).unwrap();
+            assert_eq!(args[0], "-q");
+            assert_eq!(pair(&args, "--proto"), "=http", "{}", loopback);
+            assert_eq!(pair(&args, "--proto-redir"), "=http", "{}", loopback);
+        }
+    }
+
+    #[test]
+    fn curl_refuses_urls_outside_the_endpoint_policy_before_starting() {
+        for url in [
+            "http://example.test/",
+            "http://127.0.0.1.example.test/",
+            "http://localhost.example.test/",
+            "http://10.0.0.5/",
+            "file:///etc/passwd",
+            "ftp://127.0.0.1/",
+            "gopher://127.0.0.1/",
+            "127.0.0.1:8000",
+            "",
+            "https://",
+        ] {
+            assert!(
+                matches!(curl_args(url, 15), Err(DiscoveryError::TransportError(_))),
+                "should refuse {:?}",
+                url
+            );
+        }
+        let transport = CurlTransport::new(5);
+        assert!(transport.get("file:///etc/passwd").is_err());
+        assert!(transport.post("http://example.test/", "{}").is_err());
+    }
+
+    #[test]
+    fn http_status_is_checked_without_using_the_body() {
+        assert_eq!(
+            take_http_status("{\"ok\":true}\n200".to_owned(), "get").unwrap(),
+            "{\"ok\":true}"
+        );
+        assert_eq!(take_http_status("\n204".to_owned(), "get").unwrap(), "");
+        let message = |raw: &str| match take_http_status(raw.to_owned(), "get").unwrap_err() {
+            DiscoveryError::TransportError(m) => m,
+            other => panic!("unexpected {:?}", other),
+        };
+        assert!(message("SECRET\n404").contains("HTTP 404"));
+        assert!(!message("SECRET\n404").contains("SECRET"));
+        assert!(message("x\n429").contains("rate limited"));
+        assert!(message("x\n302").contains("redirects are not followed"));
+        assert!(message("x\n503").contains("HTTP 503"));
+        assert!(message("x\n000").contains("HTTP 0"));
+        assert!(message("no status line").contains("no HTTP status"));
+        assert!(message("x\nabc").contains("invalid HTTP status"));
     }
 
     // -----------------------------------------------------------------------
