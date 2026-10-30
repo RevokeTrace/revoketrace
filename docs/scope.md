@@ -25,6 +25,7 @@ The engine must fail closed. It can report `UNVERIFIED_FORECAST` when supplied d
 - Live discovery uses Horizon for bounded candidate enumeration and a single-batch current-tip RPC read. It is classified as `BOUNDED_CURRENT_TIP_RPC`, not as a complete historical ledger export.
 - Evidence classifications are derived from validated properties. Caller-supplied labels, manifests, or authority claims cannot produce `COMPLETE_AUTHORITATIVE_LEDGER`.
 - `SUPPORTED_BLOCKED` is a modeled protocol or reserve and sponsorship blocker, not a complete transaction preflight result.
+- Wrong network is checked only against the caller-supplied passphrase, which live mode requires to be the Testnet passphrase. The program does not ask the RPC server which network it serves, so an endpoint on another network is not detected.
 - Protocol versions 18 to 29 are evaluated; other versions are `UNSUPPORTED`. A missing protocol version produces `W_PROTOCOL_UNVERIFIED`. See the [protocol support decision](../research/protocol-support-decision.md).
 - `SUPPORTED_SAFE` is unreachable until an independent authoritative capture verifier exists.
 - `inspect` validates a report envelope only. It does not authenticate provenance, recompute the forecast, or approve a transaction.
