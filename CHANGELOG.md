@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Live endpoints must use `https://`. Plain `http://` is accepted only for loopback hosts. Documented that endpoint URLs are recorded verbatim in live reports.
+- Live endpoints must use `https://`. Plain `http://` is accepted only for loopback hosts. Documented that endpoint URLs are recorded verbatim in live reports. The `curl` transport now ignores configuration files (`-q`), restricts protocols and redirects in `curl` itself, never follows redirects, and treats non-2xx HTTP statuses as network failures.
 
 ## 1.0.0 (published)
 

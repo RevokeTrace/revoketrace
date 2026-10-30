@@ -706,7 +706,7 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    crate::discovery::is_loopback_host(host)
 }
 
 fn validate_port(label: &str, port: &str) -> Result<(), CliError> {
