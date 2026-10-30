@@ -2,7 +2,7 @@
 
 This index makes important RevokeTrace claims traceable without treating all evidence as equivalent. "Covered by test" means a repository test exercised a stored or synthetic input. It is not independent ledger evidence. "Tested locally" records an audit command, not a hosted CI result.
 
-Audit date: 2026-10-30. The audit baseline was `main` at `55a5b94861ae3ef10ca91c40b7bcc12c90f63222`; the immutable `v1.0.0` tag peels to `9b0e10121a4413d07e6323bd351a6ed4680279bb`.
+Audit date: 2026-10-30. The first audit baseline was `main` at `55a5b94861ae3ef10ca91c40b7bcc12c90f63222`; this index was re-checked against `main` at `7326436a4e5dae801240cefbd5722b2719a049a8`; the immutable `v1.0.0` tag peels to `9b0e10121a4413d07e6323bd351a6ed4680279bb`.
 
 | Claim | Implementation / source | Evidence and environment | Status | Limitation |
 | --- | --- | --- | --- | --- |
@@ -17,13 +17,61 @@ Audit date: 2026-10-30. The audit baseline was `main` at `55a5b94861ae3ef10ca91c
 | Input and report-output safeguards are bounded and conservative | `src/cli.rs` | malformed/oversized reader, endpoint, overwrite, concurrent installation, failed installation, and symlink tests | COVERED BY TEST | `--force` needs a trusted output directory, as documented in [CLI](cli.md). |
 | Release source is v1.0.0 | annotated tag and GitHub release | [published v1.0.0 release](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0), tag target above | VERIFIED | Source-distributed release; no independently verified binary asset is claimed. |
 | Hosted documentation is available | GitHub Pages workflow and site | HTTPS request to `https://revoketrace.github.io/revoketrace/` returned HTTP 200 during this audit | VERIFIED | A Pages deployment does not prove future link availability. |
-| Locked build, tests, format, Clippy, audit, and rustdoc pass | repository `Cargo.lock` and toolchain | Local audit run: `cargo fmt --check`, `cargo test --locked` (153 tests), release build, strict Clippy, `cargo audit --deny warnings`, warning-denied rustdoc, and `git diff --check` | TESTED LOCALLY | Local verification is separate from GitHub Actions. |
+| Locked build, tests, format, Clippy, audit, and rustdoc pass | repository `Cargo.lock` and toolchain | Local run on 2026-10-30 at the commit that carries this change: `cargo fmt --check`, `cargo test --locked` (184 tests: 173 unit and 11 binary-level), release build, strict Clippy, `cargo audit --deny warnings` (exit 0, 1,395 advisories, 31 crates), warning-denied rustdoc, `mdbook build` 0.4.52, `scripts/check-doc-links.py`, and `git diff --check` | TESTED LOCALLY | Local verification is separate from GitHub Actions. |
 
 ## Protocol and dependency boundary
 
 The source review is pinned to Stellar Core `05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4`. The crate is locked to `stellar-xdr` 28.0.1 and Rust 1.97.1. The Core pin documents semantics; the XDR crate supplies generated types; tests cover the implemented operation subset. They are different forms of evidence. A newer Core or XDR release needs an explicit compatibility review before support is claimed.
 
 Offline snapshots, live ledger headers, and stored captures are checked against one policy in `src/protocol.rs`. Versions 18 to 29 are evaluated. Versions below 18 and above 29 are refused as `UNSUPPORTED`. The upper bound exists because the pinned XDR decoder cannot parse protocol 30 ledger headers. The range is a source-review boundary: the repository records no protocol version for any real ledger it captured, so it does not claim a version was observed live. See the [protocol support decision](../research/protocol-support-decision.md) for the evidence by version. The v1.0.0 release itself only enforces the lower bound. [Compatibility research](../research/compatibility-matrix.md) preserves the original source-review details.
+
+## Public claim reconciliation
+
+Checked on 2026-10-30. Status words: VERIFIED (confirmed from an external or hosted source), TESTED LOCALLY (a repository test or a local command), LOGICALLY COVERED (follows from the code, not exercised), UNVERIFIED, KNOWN LIMITATION, BLOCKED. The older rows above use "COVERED BY TEST", which corresponds to TESTED LOCALLY here. CI runs the same tests, but the hosted result for this change is not available until its pull request runs.
+
+| Public claim | Where stated | Source | Test or proof | Status | Remaining limitation |
+| --- | --- | --- | --- | --- | --- |
+| Forecasts `SetTrustLineFlags` and `AllowTrust` authorization changes | README, release notes | `classify_transition`, `evaluate` in `src/lib.rs` | `maintain_liabilities_transition_does_not_redeem`, `clearing_maintain_liabilities_enters_redemption_path` | TESTED LOCALLY | Modeled, not a transaction preflight. |
+| CAP-0038 redemption amounts and ordering | README, release notes | `forecast_amount`, pool sort in `evaluate` | `exact_integer_redemption_uses_floor`, `test_deterministic_pool_ordering_observable_difference` | TESTED LOCALLY | Compared with a pinned Core source review, not with a live forced redemption. |
+| Claimable-balance IDs | README | `derive_pool_revoke_claimable_balance_id` | `derives_cap0038_pool_revoke_id_from_xdr_preimage` | TESTED LOCALLY | Omitted when operation context is missing. No ID was compared with an ID created by a real redemption. |
+| Pool deletion predictions | Release notes | `pool_will_be_deleted` logic in `evaluate` | `missing_pool_shares_trust_line_count_evidence_leaves_deletion_unforecast` and counter tests | TESTED LOCALLY | Needs `poolSharesTrustLineCount`; otherwise reported as unavailable. |
+| Reserve and sponsorship modeling | README, release notes | `evaluate`, `validate_snapshot` | target failure-mode tests, `test_adversarial_14_incorrect_sponsorship_identity` | TESTED LOCALLY | Multi-operation sponsorship handoffs are not independently verified live. KNOWN LIMITATION. |
+| Bounded current-tip Testnet acquisition | README, release notes | `acquire_live_evidence` | Mock-transport tests only | TESTED LOCALLY | No live run was achieved in this pass (BLOCKED, see [the attempt record](../research/testnet-live-attempt-2026-10-30.md)). Earlier live evidence is the stored capture and the flag-only operation. |
+| Live discovery is not exhaustive or historical | README, release notes | Design | Not applicable | KNOWN LIMITATION | Stated everywhere it matters. |
+| Protocol compatibility | Architecture, scope, SECURITY | `src/protocol.rs` | Boundary tests for 17, 18, 29, 30, `u32::MAX` and missing metadata | TESTED LOCALLY | Range 18 to 29 is a source-review boundary. No protocol version of a real captured ledger is recorded. See [the decision](../research/protocol-support-decision.md). v1.0.0 enforced only the lower bound. |
+| Wrong network is rejected | Scope | CLI passphrase check in `execute_live` | `tests/live_cli.rs` | TESTED LOCALLY | Only the caller-supplied passphrase is checked. A provider on another network is not detected. KNOWN LIMITATION. |
+| Report provenance is not authenticated | README, SECURITY, CLI | `render_human_inspection`, `execute_inspect` | `tests/inspect_cli.rs` | TESTED LOCALLY | The exit code follows the saved label. |
+| Deterministic output | README, release notes | Sorted collections in `src/report.rs` | `deterministic_fixture_reports_have_stable_json`; the demo transcript compares two runs byte for byte | TESTED LOCALLY | Holds for equal inputs on one toolchain. |
+| File safety | README, CLI | `write_atomic` | overwrite, concurrent, failed-force, symbolic-link tests | TESTED LOCALLY | `--force` needs a trusted directory. A killed process can leave a hidden temporary file (LOGICALLY COVERED, not tested). |
+| Never signs, builds, or broadcasts | README, SECURITY | No such code path exists | A search of `src`, `tests`, and `examples` for signing, key, seed, submit, and broadcast terms found none, and `Cargo.toml` lists only `serde`, `serde_json`, `stellar-xdr`, `sha2`, and `hex` | LOGICALLY COVERED | Absence is shown by reading the code, not by a test. |
+| Published release identity | README, CHANGELOG, release notes | Annotated tag `v1.0.0` (object `984eec70af723c30bfc26864ddf9ef31fe67378a`) peels to `9b0e10121a4413d07e6323bd351a6ed4680279bb` | Fetched from the remote on 2026-10-30; the commit is an ancestor of `main` | VERIFIED | Source-only release with no assets. The release title is `RevokeTrace v1.0.0.` with a trailing period. |
+| Documentation is deployed | README | Pages workflow | Hosted run on `main` at `7326436`: `build` and `deploy` succeeded | VERIFIED | Hosted result for a later commit is not available yet. |
+| Documentation validation gates merges | maintenance | `.github/workflows/docs.yml` | Not applicable | UNVERIFIED | `main` requires only `rust`. The `docs` check must be added by an administrator. See [maintenance](maintenance.md). |
+| MIT licensed | README, repository | `LICENSE` | GitHub reports license `mit` | VERIFIED | |
+
+## Failure and recovery review
+
+The CLI submits no transactions and runs no background jobs, so transaction confirmation, settlement, job recovery, and wallet-signing recovery do not apply. The rows below cover the real CLI and network boundaries. "Mock" means a fake transport or a shell process standing in for `curl`. Mock results show that the program fails closed. They do not show how any real provider behaves, and no row is VERIFIED LIVE.
+
+| Failure scenario | Test or observation | Classification | Safe behavior | Unverified boundary |
+| --- | --- | --- | --- | --- |
+| Request timeout | `test_discovery_provider_error_or_timeout`, `test_adversarial_16_interrupted_capture`, `horizon_timeout_after_valid_header_is_a_transport_error` (mock) | TESTED LOCALLY | Transport error, exit 50, no report | Real `curl --max-time` expiry not exercised. |
+| Provider unreachable | `live_reports_an_unreachable_loopback_endpoint_as_a_network_failure` runs the real binary and real `curl` against a closed loopback port; the blocked Testnet attempt gave the same exit code | TESTED LOCALLY | Exit 50, empty standard output | A real provider outage was not observed. |
+| Rate limiting (HTTP 429) or HTML error page | `rate_limit_or_error_page_from_horizon_fails_closed_as_parse_error` and two siblings (mock) | TESTED LOCALLY | Parse error, exit 50 | HTTP status is not checked. A real 429 was not seen. KNOWN LIMITATION. |
+| JSON-RPC error object or empty result | `non_json_or_error_object_from_rpc_header_request_fails_closed` (mock) | TESTED LOCALLY | Transport or parse error, exit 50 | |
+| Malformed JSON input or report | `bounded_input_reader_rejects_invalid_json_and_oversized_files`, `unsupported_and_malformed_reports_are_rejected_without_output` | TESTED LOCALLY | Exit 40, no output | |
+| Invalid XDR | `test_adversarial_26_constituent_trustline_malformed_xdr` (mock), `test_decode_real_testnet_header_xdr` (decodes a stored real header) | TESTED LOCALLY | Classified inconclusive. In `live`, a parse error exits 50, the same as a network failure. | The exit code does not distinguish a corrupt response from an unreachable provider. |
+| Oversized response, partial output, non-UTF-8 output, missing `curl` | `curl_output_*`, `missing_curl_binary_is_a_transport_error` (shell stand-in) | TESTED LOCALLY | Transport or parse error, partial output discarded | |
+| Wrong network passphrase | `live_refuses_a_non_testnet_passphrase_before_any_request` | TESTED LOCALLY | Exit 40 before any request | A provider on another network is not detected. KNOWN LIMITATION. |
+| Unsupported protocol version | `live_header_above_reviewed_protocol_range_is_unsupported`, `analyze_refuses_protocol_versions_outside_the_reviewed_range` | TESTED LOCALLY | Unsupported, exit 30 | No real ledger at an unsupported version was seen. |
+| Stale or mixed-ledger evidence | `test_adversarial_7_mixed_ledger_evidence`, `test_adversarial_17_stale_indexer_data`, `test_adversarial_18_deliberate_mismatched_ledger_sequences_fails_closed` | TESTED LOCALLY | Inconclusive, exit 20 | |
+| Retry limit | `test_adversarial_19_bounded_retry_succeeds_when_tip_advances_transiently` and test 18 (three attempts, then fail) | TESTED LOCALLY | Bounded retry, then fail closed | |
+| Duplicate, omitted, or unexpected ledger entries | `test_adversarial_3_duplicate_ledger_entry`, `rpc_duplicate_returned_key_is_rejected_without_overwrite`, `rpc_missing_required_key_is_rejected`, `rpc_unexpected_returned_key_is_rejected` | TESTED LOCALLY | Inconclusive, exit 20 | |
+| Process killed during file output | None. The destination is replaced only by an atomic rename or a no-replace hard link. | LOGICALLY COVERED | Destination never partially written | A hidden `.NAME.revoketrace-PID-N.tmp` file can remain. Not tested by killing a process. KNOWN LIMITATION. |
+| Concurrent output installation | `concurrent_no_force_installation_never_overwrites_destination` | TESTED LOCALLY | One writer wins, none overwrites | |
+| Symbolic-link output | `symbolic_link_destinations_are_rejected_without_following` | TESTED LOCALLY | Exit 60 | A hostile local process racing a `--force` write is a documented limitation. |
+| `--force` behavior | `atomic_output_refuses_overwrite_and_supports_explicit_force`, `failed_force_installation_preserves_destination_and_cleans_temp` | TESTED LOCALLY | Existing file kept on failure | |
+| Live behavior of any of the above | The Testnet attempt was blocked | UNVERIFIED | | All live recovery behavior. |
 
 ## Audit findings at the starting baseline
 
