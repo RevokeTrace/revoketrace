@@ -123,4 +123,4 @@ Reports use the existing `serde` and `serde_json` stack, and the repository cont
 
 The project declares the MIT license. See [LICENSE](LICENSE).
 
-CI runs formatting, locked tests, the release binary build, and strict locked Clippy checks. Rust documentation and `cargo audit` are useful local checks but are not currently CI jobs. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.
+CI runs formatting, locked tests, a locked binary build, and strict locked Clippy checks. Rust documentation and `cargo audit` are useful local checks but are not currently CI jobs. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.
