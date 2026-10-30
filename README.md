@@ -6,6 +6,8 @@ It is useful to Stellar issuers, protocol researchers, and maintainers investiga
 
 Start with the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
 
+The [1.0.0 release-candidate record](CHANGELOG.md) summarizes the candidate contract, reproduction path, and remaining release limitations. It is not a published release.
+
 Report files are written through an exclusively created, flushed temporary file.
 Without `--force`, the final installation is atomic and no-replace; an existing or
 concurrently created destination is never overwritten. `--force` permits replacement
