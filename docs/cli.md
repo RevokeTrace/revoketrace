@@ -33,6 +33,8 @@ Required options:
 
 If that context is absent, the engine can still forecast amounts but will explicitly leave claimable-balance IDs uncomputed.
 
+`AllowTrust` may change only the two authorization flags. Its before and after values must preserve the trustline's non-authorization flags, including `clawback_enabled`; use `SetTrustLineFlags` for an operation that explicitly changes those flags.
+
 ### `revoketrace live`
 
 Acquires bounded current-tip Testnet evidence through the existing `AuthoritativeEvidenceAdapter`, then evaluates the same engine as offline mode. Required network options are explicit:
