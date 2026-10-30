@@ -92,6 +92,16 @@ rejected for output files. `--output -` writes to stdout.
 
 Endpoints must use `https://`. Plain `http://` is accepted only for a loopback host (`localhost`, `127.0.0.1`, or `[::1]`), because TLS is the only protection for the Horizon and RPC responses. Endpoints also reject embedded user information, `%` encoding, query strings, fragments, whitespace, and control characters. Live reports record both endpoint URLs verbatim. Validation cannot detect a secret placed in the URL path, so use public endpoints that need no key in the URL. Reports otherwise contain public account and evidence identifiers only.
 
+Live requests are made by the system `curl` executable, started with a fixed set of options:
+
+- `-q` is the first option, so `curl` does not read `.curlrc` or any configuration under `CURL_HOME`. A configuration file cannot add redirect following, a different proxy, or looser certificate settings.
+- `curl` itself is limited to `https` (or `http` for the loopback hosts above) with `--proto` and `--proto-redir`, and TLS 1.2 or later is required for HTTPS. A URL with another scheme, such as `file://`, or cleartext to a remote host, is refused before `curl` starts.
+- Redirects are never followed (`--max-redirs 0`). A 3xx answer is an error, and the redirect target is not contacted.
+- Any HTTP status outside 200 to 299 is a network failure (exit code 50), and the response body is not used. HTTP 429 is reported as rate limited. The request has no retry on these statuses.
+- The request body is sent literally (`--data-raw`) and URL globbing is off.
+
+Proxy and CA environment variables such as `HTTPS_PROXY` and `SSL_CERT_FILE` are still honored. They belong to the operator's trusted environment. `curl` has no environment setting that turns certificate verification off.
+
 ## JSON report schema
 
 Every JSON report has these top-level fields in this order:

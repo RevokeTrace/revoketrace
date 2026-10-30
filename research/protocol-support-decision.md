@@ -46,7 +46,7 @@ Mainnet and Testnet protocol schedules were not verified from an official source
 ## Where the policy is enforced
 
 - Offline snapshots: `validate_snapshot` in `src/lib.rs` returns an `unsupported protocol version` error, which becomes `UNSUPPORTED` and exit code 30.
-- Live ledger header and stored capture validation: `check_protocol_version` in `src/evidence.rs` returns `DiscoveryError::UnsupportedProtocolVersion`, which maps to exit code 30.
+- Live mode: the `protocolVersion` the RPC reports is checked first, before `headerXdr` is decoded. A protocol 30 ledger therefore returns `DiscoveryError::UnsupportedProtocolVersion` (exit code 30) even though its header cannot be decoded. After decoding, the header's own version must equal the RPC value, otherwise `DiscoveryError::InconsistentProtocolVersion` is returned (inconclusive, exit code 20). A malformed header with a supported RPC version is a parse error (exit code 50). The header value is then checked again, and stored captures use the same `check_protocol_version`.
 - Missing version: warning `W_PROTOCOL_UNVERIFIED` and the limitation `protocol version evidence is unavailable`.
 
 ## Sources

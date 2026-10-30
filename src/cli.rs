@@ -709,7 +709,7 @@ fn validate_endpoint(label: &str, value: &str) -> Result<(), CliError> {
 }
 
 fn is_loopback_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+    crate::discovery::is_loopback_host(host)
 }
 
 fn validate_port(label: &str, port: &str) -> Result<(), CliError> {
@@ -1438,6 +1438,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_failures_map_to_network_exit_and_evidence_failures_to_inconclusive() {
+        assert_eq!(
+            exit_code_for_discovery_error(&DiscoveryError::TransportError("timeout".to_owned())),
+            EXIT_NETWORK
+        );
+        assert_eq!(
+            exit_code_for_discovery_error(&DiscoveryError::ParseError("not json".to_owned())),
+            EXIT_NETWORK
+        );
+        assert_eq!(
+            exit_code_for_discovery_error(&DiscoveryError::StaleIndexerData("x".to_owned())),
+            EXIT_INCONCLUSIVE
+        );
+        assert_eq!(
+            exit_code_for_discovery_error(&DiscoveryError::InconsistentLedgerSequence {
+                entry_seq: 2,
+                snapshot_seq: 1
+            }),
+            EXIT_INCONCLUSIVE
+        );
+    }
+
+    #[test]
     fn cleartext_http_endpoints_are_limited_to_loopback_hosts() {
         for accepted in [
             "https://horizon-testnet.stellar.org",
@@ -1472,29 +1495,6 @@ mod tests {
             .unwrap_err()
             .message;
         assert!(message.contains("https://"), "{}", message);
-    }
-
-    #[test]
-    fn provider_failures_map_to_network_exit_and_evidence_failures_to_inconclusive() {
-        assert_eq!(
-            exit_code_for_discovery_error(&DiscoveryError::TransportError("timeout".to_owned())),
-            EXIT_NETWORK
-        );
-        assert_eq!(
-            exit_code_for_discovery_error(&DiscoveryError::ParseError("not json".to_owned())),
-            EXIT_NETWORK
-        );
-        assert_eq!(
-            exit_code_for_discovery_error(&DiscoveryError::StaleIndexerData("x".to_owned())),
-            EXIT_INCONCLUSIVE
-        );
-        assert_eq!(
-            exit_code_for_discovery_error(&DiscoveryError::InconsistentLedgerSequence {
-                entry_seq: 2,
-                snapshot_seq: 1
-            }),
-            EXIT_INCONCLUSIVE
-        );
     }
 
     #[test]
