@@ -1414,8 +1414,7 @@ mod tests {
         assert!(parse_output(&options).is_err());
     }
 
-    #[test]
-    fn deterministic_fixture_reports_have_stable_json() {
+    fn fixture_report() -> ReportDocument {
         let snapshot: Snapshot =
             serde_json::from_slice(include_bytes!("../fixtures/live-testnet-discovery.json"))
                 .expect("fixture snapshot");
@@ -1439,22 +1438,20 @@ mod tests {
             AuthoritativeEvidenceAdapter::<CurlTransport>::validate_and_classify(&snapshot)
                 .expect("fixture evidence classification");
         let engine = evaluate(&operation, &snapshot);
-        let first = ReportDocument::from_engine(
+        ReportDocument::from_engine(
             ReportMode::Offline,
             &operation,
             &snapshot,
             evidence,
             &engine,
         )
-        .expect("first report");
-        let second = ReportDocument::from_engine(
-            ReportMode::Offline,
-            &operation,
-            &snapshot,
-            evidence,
-            &engine,
-        )
-        .expect("second report");
+        .expect("fixture report")
+    }
+
+    #[test]
+    fn deterministic_fixture_reports_have_stable_json() {
+        let first = fixture_report();
+        let second = fixture_report();
         assert_eq!(first.json_bytes().unwrap(), second.json_bytes().unwrap());
         let json = String::from_utf8(first.json_bytes().unwrap()).unwrap();
         assert!(json.contains("UNVERIFIED_FORECAST"));
@@ -1469,6 +1466,47 @@ mod tests {
         let mut altered = first;
         altered.evidence.manifest_sha256 = "0".repeat(64);
         assert!(altered.validate_schema().is_ok());
+    }
+
+    #[test]
+    fn inspect_preserves_saved_report_classification_without_authenticating_provenance() {
+        let dir = test_output_dir("inspect-untrusted");
+        let path = dir.join("report.json");
+        let mut report = fixture_report();
+        report.evidence.evidence_classification =
+            crate::report::ReportEvidenceClassification::CompleteAuthoritativeLedger;
+        fs::write(&path, report.json_bytes().expect("serialized report")).unwrap();
+
+        let code = run([
+            OsString::from("revoketrace"),
+            OsString::from("inspect"),
+            OsString::from("--report"),
+            path.into_os_string(),
+            OsString::from("--format"),
+            OsString::from("json"),
+        ]);
+
+        assert_eq!(code, EXIT_FORECAST_WARNING);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn inspect_rejects_unsupported_report_schema() {
+        let dir = test_output_dir("inspect-schema");
+        let path = dir.join("report.json");
+        let mut report = fixture_report();
+        report.schema_version += 1;
+        fs::write(&path, report.json_bytes().expect("serialized report")).unwrap();
+
+        let code = run([
+            OsString::from("revoketrace"),
+            OsString::from("inspect"),
+            OsString::from("--report"),
+            path.into_os_string(),
+        ]);
+
+        assert_eq!(code, EXIT_INVALID_INPUT);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

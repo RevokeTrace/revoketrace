@@ -1,8 +1,8 @@
 # RevokeTrace scope
 
-The command reference is [docs/cli.md](cli.md). This document records the current engine scope and protocol boundary. Historical design records remain under [research](../research/).
+The command reference is [docs/cli.md](cli.md). This document records the current engine scope and protocol boundary. See [architecture](architecture.md) for the implemented design, [verification](verification.md) for claim evidence, and [maintenance](maintenance.md) for upkeep and releases. Historical design records remain under [research](../research/).
 
-RevokeTrace is a read-only forecasting engine and CLI for Stellar Classic issuer authorization changes. Milestones 1 through 6 are complete within the bounded-evidence scope described here.
+RevokeTrace is a read-only forecasting engine and CLI for Stellar Classic issuer authorization changes. v1.0.0 implements the bounded-evidence scope described here. It does not eliminate the stated evidence limitations.
 
 ## In scope
 

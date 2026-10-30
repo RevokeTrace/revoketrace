@@ -8,6 +8,7 @@ You need:
 
 - Git.
 - Rust 1.97.1. The pinned toolchain is declared in [rust-toolchain.toml](rust-toolchain.toml) and is selected automatically by rustup.
+- `cargo-audit` 0.22.2 for the advisory check: `cargo install cargo-audit --version 0.22.2 --locked`.
 - `curl` for the optional live Testnet command. Offline analysis and the test suite do not require network access.
 
 After a clean clone:
@@ -33,17 +34,12 @@ cargo fmt --check
 cargo test --locked
 cargo build --locked --bin revoketrace
 cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo audit --deny warnings
+RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked
 git diff --check
 ```
 
-The repository also uses these useful local checks:
-
-```bash
-cargo audit --deny warnings
-RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked
-```
-
-The current GitHub Actions job enforces formatting, locked tests, the binary build, and strict Clippy. It does not currently enforce `cargo audit` or rustdoc, so do not describe those checks as CI requirements.
+The GitHub Actions `rust` check enforces formatting, locked tests, the binary build, strict Clippy, `cargo audit --deny warnings`, and warning-denied rustdoc. The audit installation is version-pinned in CI. Run the same commands locally before opening a pull request.
 
 ## Tests and fixtures
 

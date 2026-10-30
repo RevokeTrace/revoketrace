@@ -1,5 +1,7 @@
 # Selected Discovery Architecture: Two-Tier Verifiable Discovery
 
+> **Historical research notice, 2026-10-27.** This document preserves a conditional completeness argument for the proposed architecture. Its reconciliation theorem remains useful only when its stated inputs are valid, complete, and from the same ledger, and when the Core invariant holds. v1.0.0 implements bounded current-tip Horizon/RPC acquisition and reports `BOUNDED_CURRENT_TIP_RPC`; it does not independently demonstrate exhaustive or historical ledger capture. Read the current [architecture](../docs/architecture.md), [scope](../docs/scope.md), and [verification index](../docs/verification.md) before treating this proposal as a release capability.
+
 Research date: 2026-10-27.  
 Scope: Architecture selection and rationale for discovering affected pool-share trustlines in RevokeTrace.
 

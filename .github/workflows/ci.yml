@@ -5,12 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
@@ -18,3 +21,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked --bin revoketrace
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Install pinned cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit --deny warnings
+      - run: RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked

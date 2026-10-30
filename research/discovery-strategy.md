@@ -1,5 +1,7 @@
 # Pool-share discovery and completeness strategy
 
+> **Historical research notice, 2026-10-27.** Phase labels and blocked-status statements in this document describe the repository at the time of the investigation. The release now includes a bounded live adapter, but it still does not prove exhaustive or historical discovery. See [the current architecture](../docs/architecture.md) and [scope](../docs/scope.md) for implemented behavior and limits.
+
 Research date: 2026-10-27. This is a design proof for refusing incomplete analysis; it is not a live capture implementation.
 
 ## Required pre-state

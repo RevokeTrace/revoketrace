@@ -1,5 +1,7 @@
 # Protocol compatibility
 
+> **Historical research notice, 2026-10-27.** This is a Phase 1 source review, retained as evidence of the original analysis rather than a complete statement of v1.0.0 support. The release implements the documented bounded subset and rejects live protocol versions below 18. Consult [verification](../docs/verification.md) and [scope](../docs/scope.md) for current support and limitations.
+
 Research date: 2026-10-27. This is a Phase 1 source review, not a statement of production support.
 
 Source pins used in this review: `stellar-core` `05c6328c13b595c52b6ad1ecd1e69cd9b2a582d4` (`master` on the review date), `rs-stellar-xdr` `v28.0.1` at `ced6bd3cc9f5d8d03445bdf0d7e907814822b370`, and current `rs-stellar-xdr` release `v30.0.0` at `3c2aa43d2ab54d429ae44aa5143d805bf5dba7e2`. The crate is pinned to 28.0.1 for the feasibility spike; 30.0.0 is now the latest visible release and requires a compatibility review before changing the pin.

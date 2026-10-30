@@ -8,6 +8,8 @@ Describe the focused change and why it is needed.
 - [ ] `cargo test --locked`
 - [ ] `cargo build --locked --bin revoketrace`
 - [ ] `cargo clippy --all-targets --all-features --locked -- -D warnings`
+- [ ] `cargo audit --deny warnings`
+- [ ] `RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked`
 - [ ] `git diff --check`
 - [ ] Documentation and internal links were checked when applicable.
 
