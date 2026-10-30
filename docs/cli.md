@@ -87,7 +87,7 @@ Every JSON report has these top-level fields in this order:
 {
   "schema_version": 1,
   "report_type": "revoketrace.forecast",
-  "tool": { "name": "revoketrace", "version": "0.1.0" },
+  "tool": { "name": "revoketrace", "version": "1.0.0" },
   "mode": "offline",
   "operation": {},
   "evidence": {},

@@ -6,6 +6,8 @@ It is useful to Stellar issuers, protocol researchers, and maintainers investiga
 
 Start with the [CLI reference](docs/cli.md) for commands, JSON reports, exit codes, input limits, and file-safety behavior. The [scope document](docs/scope.md) defines the evidence model and security boundary. Protocol findings and provenance notes are recorded in [the Phase 4C verification matrix](research/phase4c-protocol-verification.md) and [the evidence audit](research/authoritative-evidence-audit.md).
 
+The [1.0.0 release-candidate record](CHANGELOG.md) summarizes the candidate contract, reproduction path, and remaining release limitations. It is not a published release.
+
 Report files are written through an exclusively created, flushed temporary file.
 Without `--force`, the final installation is atomic and no-replace; an existing or
 concurrently created destination is never overwritten. `--force` permits replacement
@@ -121,4 +123,4 @@ Reports use the existing `serde` and `serde_json` stack, and the repository cont
 
 The project declares the MIT license. See [LICENSE](LICENSE).
 
-CI runs formatting, locked tests, the release binary build, and strict locked Clippy checks. Rust documentation and `cargo audit` are useful local checks but are not currently CI jobs. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.
+CI runs formatting, locked tests, a locked binary build, and strict locked Clippy checks. Rust documentation and `cargo audit` are useful local checks but are not currently CI jobs. GitHub branch-protection settings are repository administration and are not inferred from the workflow file.
