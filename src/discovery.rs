@@ -177,6 +177,11 @@ pub enum DiscoveryError {
     UnsupportedProtocolVersion {
         version: u32,
         minimum: u32,
+        maximum: u32,
+    },
+    InconsistentProtocolVersion {
+        rpc: u32,
+        header: u32,
     },
     MissingReserveConfiguration(String),
     IncorrectNetworkPassphrase {
@@ -240,10 +245,19 @@ impl std::fmt::Display for DiscoveryError {
                 "RPC batch contains {} keys, exceeding the single-request maximum of {}",
                 requested, maximum
             ),
-            Self::UnsupportedProtocolVersion { version, minimum } => write!(
+            Self::UnsupportedProtocolVersion {
+                version,
+                minimum,
+                maximum,
+            } => write!(
                 f,
-                "unsupported protocol version: {} < minimum required {}",
-                version, minimum
+                "unsupported protocol version: {} is outside the reviewed range {} to {}",
+                version, minimum, maximum
+            ),
+            Self::InconsistentProtocolVersion { rpc, header } => write!(
+                f,
+                "inconsistent protocol version: RPC reported {} but the ledger header says {}",
+                rpc, header
             ),
             Self::MissingReserveConfiguration(s) => {
                 write!(f, "missing reserve configuration: {}", s)

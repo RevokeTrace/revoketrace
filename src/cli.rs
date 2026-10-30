@@ -1543,6 +1543,96 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Runs `analyze` on the fixture with the given protocol metadata and
+    /// returns the exit code plus the JSON report text when one was written.
+    fn analyze_fixture_with_protocol(
+        label: &str,
+        protocol_version: Option<u32>,
+    ) -> (i32, Option<String>) {
+        let _lock = output_test_lock();
+        let dir = test_output_dir(label);
+        let mut value: Value =
+            serde_json::from_slice(include_bytes!("../fixtures/live-testnet-discovery.json"))
+                .expect("fixture snapshot");
+        value["protocol_version"] = match protocol_version {
+            Some(version) => Value::from(version),
+            None => Value::Null,
+        };
+        let snapshot_path = dir.join("snapshot.json");
+        fs::write(&snapshot_path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let report_path = dir.join("report.json");
+        let issuer = "GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG";
+        let code = run([
+            OsString::from("revoketrace"),
+            OsString::from("analyze"),
+            OsString::from("--snapshot"),
+            snapshot_path.into_os_string(),
+            OsString::from("--operation"),
+            OsString::from("SetTrustLineFlags"),
+            OsString::from("--source-account"),
+            OsString::from(issuer),
+            OsString::from("--trustor"),
+            OsString::from(VALID_ACCOUNT),
+            OsString::from("--asset-code"),
+            OsString::from("FLUTTER"),
+            OsString::from("--asset-issuer"),
+            OsString::from(issuer),
+            OsString::from("--before-flags"),
+            OsString::from("1"),
+            OsString::from("--after-flags"),
+            OsString::from("0"),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--output"),
+            report_path.clone().into_os_string(),
+        ]);
+        let report = fs::read_to_string(&report_path).ok();
+        fs::remove_dir_all(dir).unwrap();
+        (code, report)
+    }
+
+    #[test]
+    fn analyze_accepts_protocol_versions_at_both_reviewed_boundaries() {
+        for version in [
+            crate::protocol::MIN_SUPPORTED_PROTOCOL_VERSION,
+            crate::protocol::MAX_REVIEWED_PROTOCOL_VERSION,
+        ] {
+            let (code, report) = analyze_fixture_with_protocol("proto-edge", Some(version));
+            assert_eq!(code, EXIT_FORECAST_WARNING, "protocol {}", version);
+            let report = report.expect("report written");
+            assert!(report.contains("UNVERIFIED_FORECAST"));
+            assert!(!report.contains("W_PROTOCOL_UNVERIFIED"));
+        }
+    }
+
+    #[test]
+    fn analyze_refuses_protocol_versions_outside_the_reviewed_range() {
+        for version in [
+            crate::protocol::MIN_SUPPORTED_PROTOCOL_VERSION - 1,
+            crate::protocol::MAX_REVIEWED_PROTOCOL_VERSION + 1,
+            u32::MAX,
+        ] {
+            let (code, report) = analyze_fixture_with_protocol("proto-out", Some(version));
+            assert_eq!(code, EXIT_UNSUPPORTED, "protocol {}", version);
+            let report = report.expect("an UNSUPPORTED report is written");
+            assert!(report.contains("\"UNSUPPORTED\""), "protocol {}", version);
+            assert!(report.contains("E_UNSUPPORTED"));
+            assert!(report.contains("reviewed range 18 to 29"));
+            assert!(!report.contains("UNVERIFIED_FORECAST"));
+            assert!(!report.contains("SUPPORTED_BLOCKED"));
+        }
+    }
+
+    #[test]
+    fn analyze_with_missing_protocol_metadata_warns_and_stays_unverified() {
+        let (code, report) = analyze_fixture_with_protocol("proto-none", None);
+        assert_eq!(code, EXIT_FORECAST_WARNING);
+        let report = report.expect("report written");
+        assert!(report.contains("W_PROTOCOL_UNVERIFIED"));
+        assert!(report.contains("protocol version evidence is unavailable"));
+        assert!(!report.contains("SUPPORTED_SAFE"));
+    }
+
     #[test]
     fn inspect_rejects_unsupported_report_schema() {
         let dir = test_output_dir("inspect-schema");
