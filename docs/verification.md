@@ -27,7 +27,7 @@ Offline snapshots, live ledger headers, and stored captures are checked against 
 
 ## Public claim reconciliation
 
-Checked on 2026-10-30. Status words: VERIFIED (confirmed from an external or hosted source), TESTED LOCALLY (a repository test or a local command), LOGICALLY COVERED (follows from the code, not exercised), UNVERIFIED, KNOWN LIMITATION, BLOCKED. The older rows above use "COVERED BY TEST", which corresponds to TESTED LOCALLY here. CI runs the same tests, but the hosted result for this change is not available until its pull request runs.
+Checked on 2026-10-30. Status words: VERIFIED (confirmed from an external or hosted source), TESTED LOCALLY (a repository test or a local command), LOGICALLY COVERED (follows from the code, not exercised), UNVERIFIED, KNOWN LIMITATION, BLOCKED. The older rows above use "COVERED BY TEST", which corresponds to TESTED LOCALLY here. Hosted CI verifies only its exact commit; check the current pull request head and both workflows before merging.
 
 | Public claim | Where stated | Source | Test or proof | Status | Remaining limitation |
 | --- | --- | --- | --- | --- | --- |

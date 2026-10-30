@@ -112,10 +112,10 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 
 | Program | Label | Basis |
 | --- | --- | --- |
-| Drips (Stellar Wave) | NOT VERIFIED | Official documentation could not be read. Secondary summaries say repository approval is discretionary and required before issues are published. Whether a submission window is open is unknown. No approval exists. |
-| GrantFox | NOT VERIFIED | No eligibility or submission rules were found, and the site returned HTTP 403 earlier. No approval exists. |
+| Drips (Stellar Wave) | NOT VERIFIED | Official documentation could not be read. Secondary summaries say repository approval is discretionary and required before issues are published. Whether a submission window is open is unknown. No approval is verified in the available evidence. |
+| GrantFox | NOT VERIFIED | No eligibility or submission rules were found, and the site returned HTTP 403 earlier. No approval is verified in the available evidence. |
 
-No application was submitted, and no issue was created for either program. Details and sources: [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md).
+This preparation pass submitted no application and created no program issues. The repository contains no independently verified application or approval record for either program. Details and sources: [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md).
 
 ## Submission materials
 
