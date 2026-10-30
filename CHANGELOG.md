@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Protocol policy: versions 18 to 29 are evaluated and any other version is refused as `UNSUPPORTED` (exit code 30), in offline, live, and stored-capture paths. v1.0.0 only enforced the lower bound. A snapshot without a protocol version now carries the warning `W_PROTOCOL_UNVERIFIED`. Rationale and evidence: [protocol support decision](research/protocol-support-decision.md).
+
 ## 1.0.0 (published)
 
 Published 2026-10-30: [RevokeTrace v1.0.0](https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0), from immutable source commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`.

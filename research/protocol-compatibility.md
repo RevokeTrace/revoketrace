@@ -1,6 +1,6 @@
 # Protocol compatibility
 
-> **Historical research notice, 2026-10-27.** This is a Phase 1 source review, retained as evidence of the original analysis rather than a complete statement of v1.0.0 support. The release implements the documented bounded subset and rejects live protocol versions below 18. Consult [verification](../docs/verification.md) and [scope](../docs/scope.md) for current support and limitations.
+> **Historical research notice, 2026-10-27.** This is a Phase 1 source review, retained as evidence of the original analysis rather than a complete statement of v1.0.0 support. The v1.0.0 release implements the documented bounded subset and rejects protocol versions below 18. A later change also refuses versions above 29; see [the protocol support decision](protocol-support-decision.md). Consult [verification](../docs/verification.md) and [scope](../docs/scope.md) for current support and limitations.
 
 Research date: 2026-10-27. This is a Phase 1 source review, not a statement of production support.
 

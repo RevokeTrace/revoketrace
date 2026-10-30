@@ -88,7 +88,11 @@ fn main() {
                 snapshot.pool_share_trustlines.len()
             );
 
-            assert!(snapshot.protocol_version.is_some_and(|v| v >= 18));
+            assert!(
+                snapshot
+                    .protocol_version
+                    .is_some_and(revoketrace_spike::protocol::is_reviewed_protocol_version)
+            );
             assert_eq!(snapshot.base_reserve_stroops, Some(5_000_000));
             assert_eq!(
                 snapshot.discovery.evidence_classification,
@@ -274,6 +278,7 @@ fn main() {
         let err = DiscoveryError::UnsupportedProtocolVersion {
             version: 17,
             minimum: 18,
+            maximum: 29,
         };
         assert_eq!(err.into_classification(), Classification::Unsupported);
         println!("  [OK] Unsupported protocol version fails closed as Unsupported");
