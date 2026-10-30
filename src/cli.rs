@@ -1338,13 +1338,13 @@ Usage:\n  revoketrace live --network-passphrase 'Test SDF Network ; September 20
 Live mode uses the existing bounded Horizon candidate enumeration and one-batch RPC evidence\nadapter. It does not prove complete ledger coverage or provide transaction signing/broadcasting."
         ),
         Some("inspect") => println!(
-            "Inspect a RevokeTrace JSON report\n\nUsage:\n  revoketrace inspect --report PATH [--format text|json] [--output PATH] [--force]"
+            "Display a saved RevokeTrace JSON report as unverified, caller-supplied data.\n\nThe file is not authenticated and the forecast is not recomputed. Use analyze or live on\nthe evidence itself to obtain a forecast.\n\nUsage:\n  revoketrace inspect --report PATH [--format text|json] [--output PATH] [--force]"
         ),
         Some(other) => println!("unknown help topic '{}'; use 'revoketrace help'", other),
         None => println!(
             "RevokeTrace {}\n\n\
 Read-only Stellar Classic authorization-revocation forecasts.\n\n\
-Commands:\n  analyze   Evaluate a validated local JSON snapshot (offline)\n  live      Acquire bounded Stellar Testnet evidence and evaluate it\n  inspect   Inspect classifications, warnings, and evidence limitations in a JSON report\n  version   Display the CLI version\n  help      Display command help\n\n\
+Commands:\n  analyze   Evaluate a validated local JSON snapshot (offline)\n  live      Acquire bounded Stellar Testnet evidence and evaluate it\n  inspect   Display a saved JSON report as unverified, caller-supplied data (not recomputed)\n  version   Display the CLI version\n  help      Display command help\n\n\
 Common options:\n  --format text|json       Human output (default) or stable JSON report\n  --output PATH            Write without overwriting an existing file\n  --force                  Explicitly permit replacement of an existing output file\n\n\
 Exit codes:\n  0  command completed (including a modeled blocked result; never transaction approval)\n  10 valid but unverified forecast containing warnings\n  20 inconclusive or contradictory evidence\n  30 unsupported operation or protocol\n  40 invalid CLI input or input file\n  50 live network/RPC failure\n  60 report output failure\n  70 internal error\n\n\
 Security boundary: the CLI is read-only, never signs or broadcasts, rejects bounded input/path\nviolations, and does not expose caller credentials in reports. UNVERIFIED_FORECAST is not a\nsuccessful transaction preflight.\n\nUse 'revoketrace help analyze', 'revoketrace help live', or 'revoketrace help inspect' for details.",
