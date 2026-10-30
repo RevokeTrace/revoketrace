@@ -12,6 +12,20 @@ Review pull requests against [CONTRIBUTING.md](../CONTRIBUTING.md), [scope](scop
 
 The 2026-10-30 audit verified active `main` branch protection: pull requests are required, the strict `rust` check is required, conversation resolution and stale-review dismissal are enabled, administrators are included, and force pushes and branch deletion are disabled. GitHub private vulnerability reporting is enabled; its current procedure is in [SECURITY.md](../SECURITY.md).
 
+### Documentation check
+
+`.github/workflows/docs.yml` builds the mdBook on every pull request, with no path filter, in a job whose check name is `docs`. A path filter would leave a required check pending on pull requests that do not touch the book. Pull request runs only build. Uploading and deploying the Pages artifact are limited to pushes to `main` and to a manual run on `main`. The workflow uses read-only `contents` permission, and only the `deploy` job holds `pages: write` and `id-token: write`. It uses the `pull_request` event, not `pull_request_target`, so pull request code never runs with repository secrets.
+
+The `docs` job runs `scripts/check-doc-links.py`, which fails on a relative Markdown link whose target file does not exist, and `mdbook build`, which fails on a malformed configuration or a chapter listed in `SUMMARY.md` that does not exist (`create-missing = false`). It does not check external URLs, in-page anchors, or prose accuracy, and mdBook does not reject every Markdown mistake, so a green `docs` run shows only that the book builds and its local links resolve.
+
+A passing `docs` run is not a merge gate until branch protection requires it. When this workflow was added, GitHub's branch API listed `rust` as the only required status check. After this workflow is on `main`, an administrator should add `docs` under Settings, Branches, the `main` rule, Require status checks to pass before merging. Add it only after a `docs` run has appeared on a pull request, because GitHub offers only check names it has seen. Then confirm the effective rule:
+
+```bash
+curl -s https://api.github.com/repos/RevokeTrace/revoketrace/branches/main | jq '.protection.required_status_checks.contexts'
+```
+
+The expected output lists both `docs` and `rust`. Until it does, do not describe documentation validation as enforced.
+
 The configured required-approval count is zero because no independently available reviewer was confirmed during the audit. That is a governance limitation, not evidence that review occurred. When an independent maintainer or reviewer is available, an administrator should require at least one approval and, where the platform supports it, approval of the latest push. Confirm the effective rule in GitHub branch settings and do not infer protection from a green CI run alone.
 
 ## Dependencies and protocol changes
