@@ -2549,24 +2549,6 @@ mod tests {
         }
     }
 
-    fn adapter_with(mock: MockTransport) -> AuthoritativeEvidenceAdapter<MockTransport> {
-        AuthoritativeEvidenceAdapter::new(
-            mock,
-            "https://horizon.example",
-            "https://rpc.example",
-            NETWORK_PASSPHRASE,
-        )
-    }
-
-    fn mock_with_empty_horizon() -> MockTransport {
-        let mut mock = MockTransport::new();
-        mock.set_get(
-            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
-            Ok(serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": [] }).to_string()),
-        );
-        mock
-    }
-
     fn base64_encode(bytes: &[u8]) -> String {
         const TABLE: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2945,6 +2927,131 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DiscoveryError::TransportError(_)));
         assert_eq!(err.into_classification(), Classification::Inconclusive);
+    }
+
+    fn adapter_with(mock: MockTransport) -> AuthoritativeEvidenceAdapter<MockTransport> {
+        AuthoritativeEvidenceAdapter::new(
+            mock,
+            "https://horizon.example",
+            "https://rpc.example",
+            NETWORK_PASSPHRASE,
+        )
+    }
+
+    fn mock_with_empty_horizon() -> MockTransport {
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Ok(serde_json::json!({ "id": TRUSTOR_STRKEY, "balances": [] }).to_string()),
+        );
+        mock
+    }
+
+    #[test]
+    fn rate_limit_or_error_page_from_horizon_fails_closed_as_parse_error() {
+        for body in [
+            "Too Many Requests",
+            "<html><body>503 Service Unavailable</body></html>",
+            "",
+        ] {
+            let mut mock = MockTransport::new();
+            mock.set_get(
+                format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+                Ok(body.to_owned()),
+            );
+            let err = adapter_with(mock)
+                .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+                .unwrap_err();
+            assert!(
+                matches!(err, DiscoveryError::ParseError(_)),
+                "body {:?} produced {:?}",
+                body,
+                err
+            );
+            assert_eq!(err.into_classification(), Classification::Inconclusive);
+        }
+    }
+
+    #[test]
+    fn non_json_or_error_object_from_rpc_header_request_fails_closed() {
+        let rpc_error = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": { "code": -32603, "message": "internal error" }
+        })
+        .to_string();
+        let empty_result =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} }).to_string();
+        // (body, the JSON-RPC error object is reported as a transport failure)
+        let cases = [
+            ("Too Many Requests".to_owned(), false),
+            ("<html>502 Bad Gateway</html>".to_owned(), false),
+            (empty_result, false),
+            (rpc_error, true),
+        ];
+        for (body, is_rpc_error) in cases {
+            let mut mock = mock_with_empty_horizon();
+            mock.set_post_method("getLatestLedger", Ok(body.clone()));
+            let err = adapter_with(mock)
+                .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+                .unwrap_err();
+            if is_rpc_error {
+                assert!(
+                    matches!(&err, DiscoveryError::TransportError(m) if m.contains("RPC error")),
+                    "body {:?} produced {:?}",
+                    body,
+                    err
+                );
+            } else {
+                assert!(
+                    matches!(err, DiscoveryError::ParseError(_)),
+                    "body {:?} produced {:?}",
+                    body,
+                    err
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_json_response_to_ledger_entries_request_fails_closed() {
+        let pool_hex = "00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46";
+        for body in ["Too Many Requests", "<html>504</html>"] {
+            let mut mock = MockTransport::new();
+            mock.set_get(
+                format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+                Ok(serde_json::json!({
+                    "id": TRUSTOR_STRKEY,
+                    "balances": [{ "asset_type": "liquidity_pool_shares", "liquidity_pool_id": pool_hex }]
+                }).to_string()),
+            );
+            mock.set_post_method("getLatestLedger", Ok(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "id": MOCK_LEDGER_HASH, "protocolVersion": 29, "sequence": 5000, "headerXdr": make_header_xdr(29, 5000, 5_000_000) }
+            }).to_string()));
+            mock.set_post_method("getLedgerEntries", Ok(body.to_owned()));
+            let err = adapter_with(mock)
+                .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+                .unwrap_err();
+            assert!(
+                matches!(err, DiscoveryError::ParseError(_)),
+                "body {:?} produced {:?}",
+                body,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn horizon_timeout_after_valid_header_is_a_transport_error() {
+        let mut mock = MockTransport::new();
+        mock.set_get(
+            format!("https://horizon.example/accounts/{}", TRUSTOR_STRKEY),
+            Err("connection timeout after 15s".to_owned()),
+        );
+        let err = adapter_with(mock)
+            .acquire_live_evidence(TRUSTOR_STRKEY, &credit_asset_flutter())
+            .unwrap_err();
+        assert!(matches!(err, DiscoveryError::TransportError(_)));
     }
 
     #[test]
