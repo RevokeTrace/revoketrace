@@ -1,5 +1,7 @@
 # RevokeTrace submission pack (draft)
 
+> **2026-10-31 evidence update:** The 20:16 PR #20 CLI result on commit `963453caa98039477ef88897d8b9da017dd8c379` was summarized as ledger 5490828, but its pasted stdout contained an issuer transcription error and has been withdrawn; no original stdout bytes were retained. A fresh fixture-derived capture from commit `9a419ebf74194359db45b79fb274e58d29c4e4de` retained raw stdout/stderr and reported ledger 5491146 (`UNVERIFIED_FORECAST`, exit 10). A separate earlier RPC body reported protocol 29 at ledger 5490831, not the fresh CLI header. See the [observation record](../research/testnet-live-observation-2026-10-31.md). No capture establishes transaction success, exhaustive discovery, an executed forced redemption, program approval, or submission readiness. The October 30 blocked attempt remains historical.
+
 Prepared 2026-10-30. This is submission preparation. It is not an application, it records no approval, and it does not say the project is ready to submit. Open items are listed at the end.
 
 ## Project identity
@@ -84,7 +86,7 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 | Test mapping | [research/test-matrix.md](../research/test-matrix.md) |
 | Protocol references | [protocol support decision](../research/protocol-support-decision.md), [Phase 4C verification](../research/phase4c-protocol-verification.md), CAP-0038 |
 | Hosted CI on `main` at `7326436` | [CI run](https://github.com/RevokeTrace/revoketrace/actions/runs/41128519091) and [Documentation run](https://github.com/RevokeTrace/revoketrace/actions/runs/41128519089), both successful |
-| Real Testnet evidence | The stored capture `fixtures/live-testnet-discovery.json` and one flag-only operation recorded in Phase 4C. A fresh live run on 2026-10-30 was [blocked](../research/testnet-live-attempt-2026-10-30.md). |
+| Real Testnet evidence | The stored capture `fixtures/live-testnet-discovery.json`, one flag-only operation recorded in Phase 4C, and the byte-preserved stdout/stderr from the fresh 20:42 CLI capture. The separately retained `getLatestLedger` response is an earlier observation, not the CLI header. See the [2026-10-31 observation](../research/testnet-live-observation-2026-10-31.md). The October 30 attempt was [blocked](../research/testnet-live-attempt-2026-10-30.md). |
 | Comparable projects | [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md) |
 | Audit and freeze record | [audit-record.md](audit-record.md) |
 
@@ -104,8 +106,8 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 - There is no guaranteed transaction-success preflight.
 - Full multi-operation sponsorship behavior is not verified against a live ledger.
 - A complete live forced-redemption evidence set has not been demonstrated. The only real Testnet operation recorded is flag-only.
-- No live run could be made in this pass because the research environment blocked the Testnet hosts.
-- Protocol versions 18 to 29 are the reviewed range. No protocol version of a real captured ledger is recorded.
+- The October 30 attempt was blocked by the then-current network environment. A bounded CLI observation completed on October 31 at ledger 5491146; its raw output is retained. The separate `getLatestLedger` response at ledger 5490831/protocol 29 predates that capture and is not its exact header. No real forced-redemption execution was observed.
+- Protocol versions 18 to 29 are the reviewed range. The separate October 31 provider response reported protocol 29; this does not extend the supported range or establish the protocol version of the CLI capture's exact header.
 - A provider on a different network from the supplied passphrase is not detected.
 
 ## Program readiness
@@ -125,8 +127,8 @@ This preparation pass submitted no application and created no program issues. Th
 | Documentation site | Deployed by a successful workflow; not fetched from the sandbox |
 | Release | Exists, source only, v1.0.0 |
 | CLI demonstration | Script and transcript from an actual run; no screen recording was made |
-| Test evidence | Local runs recorded in [docs/verification.md](../docs/verification.md) (202 tests); hosted CI is green on `main` through `6ea854d`; this pull request's own checks are shown on the pull request |
-| Testnet evidence | Stored capture only; fresh live run BLOCKED |
+| Test evidence | Historical local runs and their dates are recorded in [docs/verification.md](../docs/verification.md); current workflow results are shown on the pull request |
+| Testnet evidence | Raw stdout/stderr and capture metadata for the fresh bounded CLI observation are linked in [the dated record](../research/testnet-live-observation-2026-10-31.md); the separate raw RPC response is earlier and does not establish the CLI header. No transaction was executed or exhaustive discovery or forced-redemption effect independently observed |
 | Slide deck, video, second repository | Do not exist |
 | Any program's own required materials | Unknown, because the programs' rules were not read |
 
@@ -135,6 +137,6 @@ This preparation pass submitted no application and created no program issues. Th
 1. Merge this pull request (19), then fix the candidate commit and record it in the freeze record.
 2. Add `docs` as a required status check (administrator).
 3. Add repository topics (administrator): suggested `stellar`, `stellar-network`, `rust`, `cli`, `liquidity-pools`, `protocol-analysis`.
-4. Run `revoketrace live` once with open network access and record it in a new dated file.
+4. Assess whether the retained bounded observation satisfies any specific program's evidence requirements; it is not a forced-redemption execution or proof of exhaustive discovery.
 5. Read the Drips and GrantFox official rules and record them.
 6. Decide whether to require an independent approval on `main`.

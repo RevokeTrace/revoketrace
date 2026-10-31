@@ -1,0 +1,40 @@
+RevokeTrace Forecast Report
+============================
+Mode: Live Testnet bounded discovery
+Requested authorization change: SetTrustLineFlags
+Asset: FLUTTER issued by GBYEWT4YXA5QJPJDYFESK6T23OJGUFZDTHAFHUZNFVZLWMOJG4IOTUEG
+Trustor: GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB
+Flags: 1 -> 0
+Network: Test SDF Network ; September 2015
+Ledger evidence: ledger 5491146 (entries 5491146)
+Evidence classification: BOUNDED_CURRENT_TIP_RPC
+Forecast classification: UNVERIFIED_FORECAST (not a successful transaction preflight)
+Transition: forced pool redemption
+Base reserve: 5000000 stroops
+
+Affected liquidity pools: 2
+- Pool 00171ffe02f113eb286c4fe0642ceb9f1b508e09c6160374a22bb9ab4240ad46 (owner GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB)
+  Expected redemption: asset A 700000000 stroops; asset B 514506217 stroops
+  Pool deletion forecast: yes
+  Expected claimable balances: 2
+    - FLUTTER: 514506217 stroops, sponsor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB, clawback disabled, ID 114bfb2ee7a904f48b7adee94797b61dfb17d74ebe0aed2b13030b4fd57b2986
+    - SDK: 700000000 stroops, sponsor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB, clawback disabled, ID d9209dd88b6227cb963d0c0575861e34f20539987e15f9516714bfd7d29bc5da
+- Pool 078ff7f339a3a1c950812bd143431498f880082e0ebdb95fb348a5b87693465c (owner GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB)
+  Expected redemption: asset A 4980000000 stroops; asset B 4980000000 stroops
+  Pool deletion forecast: yes
+  Expected claimable balances: 2
+    - FLUTTER: 4980000000 stroops, sponsor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB, clawback disabled, ID 609d41867c9991c17f984e83c93dc23f500d9173d51d80281b8cda819d641ef4
+    - XLM: 4980000000 stroops, sponsor GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB, clawback disabled, ID 7b5cb5352068ba6d5343954ca5993114a4d861ea0d3efc86a88368f8274d51fc
+
+Reserve and sponsorship effects:
+- GAPOZN3WOIXJSEMGT4N6YCFL6ESLCFZZDQKKYC3WKBZUTXWRA54HERMB: subentries -4, sponsoring +4, sponsored +0, reserve units +0 (reserve effect 0 stroops)
+
+Warnings:
+- [W_UNVERIFIED_DISCOVERY] forecast is internally consistent but discovery is not independently verified
+
+Errors:
+- None.
+
+Evidence limitations:
+- UNVERIFIED_FORECAST is not a successful transaction preflight and does not certify transaction execution
+- live discovery is bounded to the enumerated candidate set and does not prove complete ledger coverage
