@@ -1,6 +1,6 @@
 # Final audit and freeze record (draft, not frozen)
 
-> **2026-10-31 evidence update:** A read-only `live` run from `main` commit `3a7e762973cb4e3c3277e18fe0014037c437ca4e` returned a bounded Testnet forecast at ledger 5490344, exit 10. A separate RPC response reported protocol 29 at ledger 5490345. See [the dated record](../research/testnet-live-observation-2026-10-31.md). Statements below that no live run succeeded refer to the October 30 audit; the record remains a historical snapshot. This new evidence does not freeze the submission or independently verify a forced-redemption execution.
+> **2026-10-31 evidence update:** The first summary reported CLI ledger 5490344 and a separate RPC ledger 5490345 without retaining either output. A later recapture from PR #20 commit `963453caa98039477ef88897d8b9da017dd8c379` retained exact CLI stdout/stderr at ledger 5490828 (exit 10) and a separate full `getLatestLedger` body reporting protocol 29 at ledger 5490831. See [the dated record](../research/testnet-live-observation-2026-10-31.md). The findings below describe the original October 30 audit snapshot; they are not rewritten as though the later observation was available then. One bounded forecast does not freeze the submission or independently verify a forced-redemption execution.
 
 Prepared 2026-10-30. The review below was done by an agent working in a sandbox. It is not an independent third-party security audit or certification. Scope: source, security, repository, and external evidence for the pre-submission pass.
 
@@ -31,8 +31,8 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 - Bounded current-tip discovery is not exhaustive or historical.
 - The program does not ask the RPC server which network it serves. A provider on another network is not detected.
 - Live forced-redemption behavior and multi-operation sponsorship are not verified against a live ledger.
-- No live Testnet run succeeded in this pass. It was blocked by the sandbox network policy.
-- The range 18 to 29 is a source-review boundary with no recorded real-ledger protocol version.
+- At the time of the October 30 audit, no live Testnet run had succeeded; that attempt was blocked by the sandbox network policy. The separate October 31 bounded recapture is recorded in the update above and does not prove exhaustive discovery or a real forced redemption.
+- The range 18 to 29 remains a source-review boundary. A separate Testnet `getLatestLedger` response later reported protocol 29, but it was not the exact ledger header used by the CLI capture and does not widen supported protocol behavior.
 - `--force` needs a trusted output directory. A killed process can leave a hidden temporary file.
 - `main` requires zero approvals, so a green CI run is the only enforced gate.
 - Offer-matching changes at protocol 29 are outside the model.
@@ -92,7 +92,7 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 
 1. This pull request (19) must pass hosted CI on its current head, be reviewed, and be merged.
 2. An administrator must require the `docs` check and add topics.
-3. A live Testnet run must be made from an environment with network access.
+3. The October 31 bounded live capture is available for review. It does not provide exhaustive discovery or an executed forced-redemption fixture; assess those limitations against any future program requirements.
 4. The Drips and GrantFox rules must be read from official sources.
 5. After 19 merges, the candidate commit must be recorded and the checks re-run on it, including the demonstration transcript.
 
