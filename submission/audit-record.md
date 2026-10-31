@@ -1,5 +1,7 @@
 # Final audit and freeze record (draft, not frozen)
 
+> **2026-10-31 evidence update:** A read-only `live` run from `main` commit `3a7e762973cb4e3c3277e18fe0014037c437ca4e` returned a bounded Testnet forecast at ledger 5490344, exit 10. A separate RPC response reported protocol 29 at ledger 5490345. See [the dated record](../research/testnet-live-observation-2026-10-31.md). Statements below that no live run succeeded refer to the October 30 audit; the record remains a historical snapshot. This new evidence does not freeze the submission or independently verify a forced-redemption execution.
+
 Prepared 2026-10-30. The review below was done by an agent working in a sandbox. It is not an independent third-party security audit or certification. Scope: source, security, repository, and external evidence for the pre-submission pass.
 
 ## Findings

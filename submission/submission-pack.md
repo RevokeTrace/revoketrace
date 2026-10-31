@@ -1,5 +1,7 @@
 # RevokeTrace submission pack (draft)
 
+> **2026-10-31 evidence update:** A current read-only Testnet run produced a bounded forecast at ledger 5490344 (`UNVERIFIED_FORECAST`, exit 10). A separate RPC request reported protocol 29 at ledger 5490345. The [observation record](../research/testnet-live-observation-2026-10-31.md) describes the inputs and limitations. This does not establish transaction success, exhaustive discovery, program approval, or submission readiness; the October 30 blocked attempt remains historical.
+
 Prepared 2026-10-30. This is submission preparation. It is not an application, it records no approval, and it does not say the project is ready to submit. Open items are listed at the end.
 
 ## Project identity

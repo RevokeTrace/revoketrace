@@ -1,5 +1,7 @@
 # Verification and claims index
 
+> **2026-10-31 live update:** A read-only Testnet `live` run on commit `3a7e762973cb4e3c3277e18fe0014037c437ca4e` returned ledger 5490344, `BOUNDED_CURRENT_TIP_RPC`, `UNVERIFIED_FORECAST`, and exit 10. A separate RPC request reported protocol 29 at ledger 5490345. See the [dated observation](../research/testnet-live-observation-2026-10-31.md). Older statements below about the October 30 blocked attempt describe that earlier pass, not the current evidence state. No forced-redemption transaction or exhaustive capture was observed.
+
 This index makes important RevokeTrace claims traceable without treating all evidence as equivalent. "Covered by test" means a repository test exercised a stored or synthetic input. It is not independent ledger evidence. "Tested locally" records an audit command, not a hosted CI result.
 
 Audit date: 2026-10-30. The first audit baseline was `main` at `55a5b94861ae3ef10ca91c40b7bcc12c90f63222`; this index was re-checked against `main` at `7326436a4e5dae801240cefbd5722b2719a049a8` and updated after PRs 14 to 18 merged (`main` at `2c01428`); the immutable `v1.0.0` tag peels to `9b0e10121a4413d07e6323bd351a6ed4680279bb`.
