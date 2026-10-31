@@ -1,6 +1,6 @@
 # Final audit and freeze record (draft, not frozen)
 
-> **2026-10-31 evidence update:** The first summary reported CLI ledger 5490344 and a separate RPC ledger 5490345 without retaining either output. A later recapture from PR #20 commit `963453caa98039477ef88897d8b9da017dd8c379` retained exact CLI stdout/stderr at ledger 5490828 (exit 10) and a separate full `getLatestLedger` body reporting protocol 29 at ledger 5490831. See [the dated record](../research/testnet-live-observation-2026-10-31.md). The findings below describe the original October 30 audit snapshot; they are not rewritten as though the later observation was available then. One bounded forecast does not freeze the submission or independently verify a forced-redemption execution.
+> **2026-10-31 evidence update:** The 20:16 PR #20 transcript from commit `963453caa98039477ef88897d8b9da017dd8c379` contained an issuer transcription mismatch and is withdrawn; its stdout was not retained as bytes. A fresh fixture-derived capture from commit `9a419ebf74194359db45b79fb274e58d29c4e4de` retained raw stdout/stderr and reported ledger 5491146, exit 10. The separate full RPC response retained at ledger 5490831/protocol 29 is an earlier observation, not the later CLI header. See [the dated record](../research/testnet-live-observation-2026-10-31.md). The findings below describe the original October 30 audit snapshot. The new capture does not freeze the submission or independently verify a forced-redemption execution.
 
 Prepared 2026-10-30. The review below was done by an agent working in a sandbox. It is not an independent third-party security audit or certification. Scope: source, security, repository, and external evidence for the pre-submission pass.
 
@@ -31,8 +31,8 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 - Bounded current-tip discovery is not exhaustive or historical.
 - The program does not ask the RPC server which network it serves. A provider on another network is not detected.
 - Live forced-redemption behavior and multi-operation sponsorship are not verified against a live ledger.
-- At the time of the October 30 audit, no live Testnet run had succeeded; that attempt was blocked by the sandbox network policy. The separate October 31 bounded recapture is recorded in the update above and does not prove exhaustive discovery or a real forced redemption.
-- The range 18 to 29 remains a source-review boundary. A separate Testnet `getLatestLedger` response later reported protocol 29, but it was not the exact ledger header used by the CLI capture and does not widen supported protocol behavior.
+- At the time of the October 30 audit, no live Testnet run had succeeded; that attempt was blocked by the sandbox network policy. A later bounded capture is recorded in the update above; it does not prove exhaustive discovery or a real forced redemption.
+- The range 18 to 29 remains a source-review boundary. The separately retained response reported protocol 29 at ledger 5490831, about 26 minutes before the fresh CLI capture at 5491146. It is not that capture's exact header and does not widen supported protocol behavior.
 - `--force` needs a trusted output directory. A killed process can leave a hidden temporary file.
 - `main` requires zero approvals, so a green CI run is the only enforced gate.
 - Offer-matching changes at protocol 29 are outside the model.
@@ -84,7 +84,7 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 | Documentation deployment | Hosted deploy succeeded on `main` at `91cd30a`, with the new workflow. The site itself was not fetched from the sandbox. |
 | Release identity | v1.0.0, tag object `984eec70af723c30bfc26864ddf9ef31fe67378a`, commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`, unchanged |
 | Verified evidence | See [docs/verification.md](../docs/verification.md) |
-| Local checks | fmt, 202 tests (181 unit, 21 binary-level), release build, clippy, audit, rustdoc, mdBook 0.4.52, link check, `git diff --check` all passed on the evidence branch |
+| Historical local checks (2026-10-30) | fmt, 202 tests (181 unit, 21 binary-level), release build, Clippy, audit, rustdoc, mdBook 0.4.52, link check, `git diff --check` passed on the earlier evidence branch. These counts are not the result of this latest evidence correction. |
 | Known limitations | See class C above |
 | Program eligibility | Drips NOT VERIFIED, GrantFox NOT VERIFIED |
 
@@ -92,7 +92,7 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 
 1. This pull request (19) must pass hosted CI on its current head, be reviewed, and be merged.
 2. An administrator must require the `docs` check and add topics.
-3. The October 31 bounded live capture is available for review. It does not provide exhaustive discovery or an executed forced-redemption fixture; assess those limitations against any future program requirements.
+3. Review the byte-preserved October 31 capture. It does not provide exhaustive discovery or an executed forced-redemption fixture; assess those limitations against any future program requirements.
 4. The Drips and GrantFox rules must be read from official sources.
 5. After 19 merges, the candidate commit must be recorded and the checks re-run on it, including the demonstration transcript.
 
