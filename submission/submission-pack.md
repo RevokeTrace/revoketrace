@@ -95,6 +95,7 @@ Run `submission/demo/run-demo.sh` to create a fresh transcript from the current 
 | Protocol references | [protocol support decision](../research/protocol-support-decision.md), [Phase 4C verification](../research/phase4c-protocol-verification.md), CAP-0038 |
 | Hosted Rust CI on reviewed `main` baseline | [CI run 41242363654](https://github.com/RevokeTrace/revoketrace/actions/runs/41242363654), successful on `1b31580fc634343a62b278566b0b510c81ce241e` |
 | Last observed successful main Documentation/deploy workflow | [Documentation run 41159173318](https://github.com/RevokeTrace/revoketrace/actions/runs/41159173318), successful on `3a7e762973cb4e3c3277e18fe0014037c437ca4e`. The workflow deploys only on main pushes affecting book files or the workflow. Direct checks on 2026-10-31 returned HTTP 200 for the root and all seven linked chapters after an earlier request timed out. |
+| Main branch protection | The successful [branch API response](https://api.github.com/repos/RevokeTrace/revoketrace/branches/main) on 2026-11-01 reports `protected: true`, `protection.enabled: true`, and required status-check contexts `rust` and `docs` enforced for everyone. Earlier limited endpoint failures are retained in [the verification index](../docs/verification.md). |
 | Real Testnet evidence | The stored capture `fixtures/live-testnet-discovery.json`, one flag-only operation recorded in Phase 4C, and the byte-preserved stdout/stderr from the fresh 20:42 CLI capture. The separately retained `getLatestLedger` response is an earlier observation, not the CLI header. See the [2026-10-31 observation](../research/testnet-live-observation-2026-10-31.md). The October 30 attempt was [blocked](../research/testnet-live-attempt-2026-10-30.md). |
 | Comparable projects | [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md) |
 | Audit and freeze record | [audit-record.md](audit-record.md) |
@@ -144,8 +145,8 @@ This review submitted no application, accessed no program account, and created n
 
 ## Maintainer actions before any application
 
-1. Review and merge the documentation readiness PR only after independent review and both workflow checks pass. Then rerun the documented checks on the resulting `main` commit before freezing a candidate.
-2. Verify `main` branch protection in repository settings. Current API access did not confirm whether pull requests, approvals, required `rust`/`docs` checks, force-push restrictions, or deletion restrictions are enforced. Do not infer enforcement from green CI.
+1. Before merging a documentation PR, confirm `rust` and `docs` pass on its exact head. After merge, rerun the documented checks on the resulting `main` commit before freezing a candidate.
+2. The branch API verifies main protection and the required `rust`/`docs` checks. Review-approval requirements, force-push/deletion restrictions, bypass permissions, and other settings were not established here. Reviewer approvals are intentionally not required at this stage; no GitHub settings were changed.
 3. If considering Drips, use the maintainer's own Drips account to verify organization onboarding, repository listing/application state, application limits, and the next relevant Wave. The public page currently shows no active or upcoming Wave.
 4. If considering GrantFox, wait until the repository meets its published age/activity guideline, prepare the required pitch, and verify whether a suitable active Campaign is accepting projects. The OSS directory being public does not establish funded campaign participation.
 5. Keep the live evidence limitations visible. The October 31 capture is a bounded `UNVERIFIED_FORECAST`, not proof of exhaustive discovery or a forced-redemption execution.
