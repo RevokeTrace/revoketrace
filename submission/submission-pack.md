@@ -1,8 +1,8 @@
-# RevokeTrace submission pack (draft)
+# RevokeTrace submission pack (readiness dossier)
 
-> **2026-10-31 evidence update:** The 20:16 PR #20 CLI result on commit `963453caa98039477ef88897d8b9da017dd8c379` was summarized as ledger 5490828, but its pasted stdout contained an issuer transcription error and has been withdrawn; no original stdout bytes were retained. A fresh fixture-derived capture from commit `9a419ebf74194359db45b79fb274e58d29c4e4de` retained raw stdout/stderr and reported ledger 5491146 (`UNVERIFIED_FORECAST`, exit 10). A separate earlier RPC body reported protocol 29 at ledger 5490831, not the fresh CLI header. See the [observation record](../research/testnet-live-observation-2026-10-31.md). No capture establishes transaction success, exhaustive discovery, an executed forced redemption, program approval, or submission readiness. The October 30 blocked attempt remains historical.
+> **Readiness review dated 2026-10-31:** The repository baseline reviewed was `main` at `1b31580fc634343a62b278566b0b510c81ce241e`. PRs #1 through #20 were merged at that point. This is a preparation document, not an application, approval, or freeze record. The current-source offline demonstration transcript is linked below. The October 31 live CLI capture from source `9a419ebf74194359db45b79fb274e58d29c4e4de` remains a bounded `UNVERIFIED_FORECAST` at ledger 5491146, exit 10. Its retained output is separate from the earlier CLI summary that was withdrawn after an issuer transcription error. The separately retained RPC response at ledger 5490831/protocol 29 is not the live CLI's exact header. See the [observation record](../research/testnet-live-observation-2026-10-31.md). No capture establishes transaction success, exhaustive discovery, an executed forced redemption, program approval, or submission readiness. The October 30 blocked attempt remains historical.
 
-Prepared 2026-10-30. This is submission preparation. It is not an application, it records no approval, and it does not say the project is ready to submit. Open items are listed at the end.
+This dossier distinguishes code readiness, evidence readiness, program eligibility, and actual application or approval status. The source candidate is not frozen. Any final submission should identify the exact post-review `main` commit and rerun the listed checks against it.
 
 ## Project identity
 
@@ -10,13 +10,15 @@ Prepared 2026-10-30. This is submission preparation. It is not an application, i
 | --- | --- |
 | Project | RevokeTrace |
 | Repository | https://github.com/RevokeTrace/revoketrace |
-| Documentation | https://revoketrace.github.io/revoketrace/ (deployment confirmed by a successful hosted workflow; the site could not be fetched from the research sandbox) |
+| Documentation | https://revoketrace.github.io/revoketrace/ (main Documentation/deploy workflow passed at `3a7e762973cb4e3c3277e18fe0014037c437ca4e`; direct `curl` returned HTTP 200 for the site root and all seven linked chapters on 2026-10-31) |
 | License | MIT (GitHub reports `mit`) |
 | Release | https://github.com/RevokeTrace/revoketrace/releases/tag/v1.0.0, source only, no binary assets |
 | Release source commit | `9b0e10121a4413d07e6323bd351a6ed4680279bb` (annotated tag object `984eec70af723c30bfc26864ddf9ef31fe67378a`) |
-| `main` when this pack was drafted | `7326436a4e5dae801240cefbd5722b2719a049a8` |
-| Candidate source commit | Not fixed. The code changes (PRs 14 to 18) are on `main` (`2c01428` at the time of writing); the commit to submit is the one after this pull request (19) merges. It must be recorded at freeze. |
+| `main` baseline reviewed | `1b31580fc634343a62b278566b0b510c81ce241e` (2026-10-31) |
+| Candidate status | Not frozen. This exact baseline is the code candidate assessed by this pass; the documentation readiness changes are still subject to PR review and merge, after which the final source commit and checks must be recorded. |
 | Primary deliverable | The `revoketrace` command-line program (Rust 1.97.1, `stellar-xdr` 28.0.1) |
+
+The published `v1.0.0` source archive is fixed at the release commit above. It predates the reviewed `main` baseline; later code and documentation changes on `main` are not part of the `v1.0.0` archive. The tag and release remain unchanged.
 
 ## Problem
 
@@ -65,17 +67,23 @@ Offline example, using the stored fixture (not newly obtained network state):
 
 Expected: the report prints `UNVERIFIED_FORECAST` and the process exits with code 10. Exit code 10 means the forecast is internally consistent but carries warnings, here that discovery is not independently verified, pool deletion cannot be forecast without counter evidence, and sponsorship evidence is incomplete. It is not a successful preflight and not transaction approval. Other exit codes: 0 completed, 20 inconclusive, 30 unsupported, 40 invalid input, 50 live network failure, 60 report output failure, 70 internal error.
 
-Tests and checks:
+Local verification on the reviewed baseline `1b31580fc634343a62b278566b0b510c81ce241e` passed: `cargo fmt --check`, `cargo test --locked` (202 tests), release build, strict Clippy, `cargo audit --deny warnings`, warning-denied rustdoc, `mdbook build` with mdBook 0.4.52, `scripts/check-doc-links.py`, and `git diff --check`. The final current-source executable demonstration is [`transcript-1b31580.txt`](demo/transcript-1b31580.txt). Its release binary was built from a clean clone at that exact commit. These results are local, not a substitute for CI on a later candidate.
+
+Reproducible check commands (CI pins mdBook 0.4.52):
 
 ```bash
+cargo install mdbook --version 0.4.52 --locked
 cargo fmt --check
 cargo test --locked
+cargo build --release --locked --bin revoketrace
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo audit --deny warnings
 RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked
+mdbook build
+python3 scripts/check-doc-links.py
 ```
 
-A scripted demonstration with a recorded transcript is in [`submission/demo/`](demo/). Run `submission/demo/run-demo.sh`; it clones the current commit and builds from the clone.
+Run `submission/demo/run-demo.sh` to create a fresh transcript from the current checkout. The older [`transcript.txt`](demo/transcript.txt) is retained as historical evidence from its recorded source commit; it is not output from the current candidate.
 
 ## Evidence
 
@@ -85,7 +93,9 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 | Claims and their status | [docs/verification.md](../docs/verification.md) |
 | Test mapping | [research/test-matrix.md](../research/test-matrix.md) |
 | Protocol references | [protocol support decision](../research/protocol-support-decision.md), [Phase 4C verification](../research/phase4c-protocol-verification.md), CAP-0038 |
-| Hosted CI on `main` at `7326436` | [CI run](https://github.com/RevokeTrace/revoketrace/actions/runs/41128519091) and [Documentation run](https://github.com/RevokeTrace/revoketrace/actions/runs/41128519089), both successful |
+| Hosted Rust CI on reviewed `main` baseline | [CI run 41242363654](https://github.com/RevokeTrace/revoketrace/actions/runs/41242363654), successful on `1b31580fc634343a62b278566b0b510c81ce241e` |
+| Last observed successful main Documentation/deploy workflow | [Documentation run 41159173318](https://github.com/RevokeTrace/revoketrace/actions/runs/41159173318), successful on `3a7e762973cb4e3c3277e18fe0014037c437ca4e`. The workflow deploys only on main pushes affecting book files or the workflow. Direct checks on 2026-10-31 returned HTTP 200 for the root and all seven linked chapters after an earlier request timed out. |
+| Main branch protection | The successful [branch API response](https://api.github.com/repos/RevokeTrace/revoketrace/branches/main) on 2026-11-01 reports `protected: true`, `protection.enabled: true`, and required status-check contexts `rust` and `docs` enforced for everyone. Earlier limited endpoint failures are retained in [the verification index](../docs/verification.md). |
 | Real Testnet evidence | The stored capture `fixtures/live-testnet-discovery.json`, one flag-only operation recorded in Phase 4C, and the byte-preserved stdout/stderr from the fresh 20:42 CLI capture. The separately retained `getLatestLedger` response is an earlier observation, not the CLI header. See the [2026-10-31 observation](../research/testnet-live-observation-2026-10-31.md). The October 30 attempt was [blocked](../research/testnet-live-attempt-2026-10-30.md). |
 | Comparable projects | [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md) |
 | Audit and freeze record | [audit-record.md](audit-record.md) |
@@ -96,7 +106,7 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 - Untrusted input: snapshots, saved reports, Horizon and RPC responses, and file paths are all treated as untrusted. Evidence classification is derived, never read from the caller.
 - Known report limitation: `inspect` does not authenticate a saved report or recompute its forecast, so a report can be edited. Its output says so, and its exit code follows the saved label.
 - Live endpoints must use `https://` (loopback excepted), and the `curl` transport reads no configuration file, never follows redirects, and rejects any non-2xx HTTP status. The RPC-reported protocol version is checked before the header is decoded. The RPC server is not asked which network it serves.
-- Private vulnerability reporting is enabled for the repository (confirmed through the GitHub API on 2026-10-30). The policy is in [SECURITY.md](../SECURITY.md) and promises no response time.
+- Private vulnerability reporting was enabled according to the GitHub repository API on 2026-10-31 (`enabled: true`). The policy is in [SECURITY.md](../SECURITY.md) and promises no response time.
 - Independent audit status: no independent third-party security audit has taken place. Automated tests, `cargo audit`, and agent-assisted review are not a substitute and are not described as one.
 
 ## Current limitations
@@ -114,29 +124,31 @@ A scripted demonstration with a recorded transcript is in [`submission/demo/`](d
 
 | Program | Label | Basis |
 | --- | --- | --- |
-| Drips (Stellar Wave) | NOT VERIFIED | Official documentation could not be read. Secondary summaries say repository approval is discretionary and required before issues are published. Whether a submission window is open is unknown. No approval is verified in the available evidence. |
-| GrantFox | NOT VERIFIED | No eligibility or submission rules were found, and the site returned HTTP 403 earlier. No approval is verified in the available evidence. |
+| Drips (Stellar Wave) | ELIGIBILITY NOT VERIFIED | The official public page showed no active or upcoming Wave. Repository applications require GitHub organization onboarding, repository sync, an application to a Wave Program, and organizer approval. Maintainer-app limits and RevokeTrace's private application status were not checked. No application or approval is verified. |
+| GrantFox OSS Contributions | NOT READY TO APPLY | The official guide calls for a connected GitHub account, project application form, and a required video pitch of about five minutes. It gives a one-to-two-month age and activity guideline. RevokeTrace was four days old at this review and no pitch is in this dossier. Review is manual. No application or approval is verified. The current campaign and private account status remain unknown. |
 
-This preparation pass submitted no application and created no program issues. The repository contains no independently verified application or approval record for either program. Details and sources: [ecosystem comparison](../research/ecosystem-eligibility-2026-10-30.md).
+This review submitted no application, accessed no program account, and created no program issues. Private application or approval status was not inspected. The repository contains no independently verified application or approval record. The dated official-source comparison, comparator review, and maintainer next steps are in [program readiness](../research/program-readiness-2026-10-31.md). The October 30 ecosystem report remains a historical record, not the current eligibility assessment.
 
 ## Submission materials
 
 | Material | Status |
 | --- | --- |
 | Repository | Exists, public, MIT |
-| Documentation site | Deployed by a successful workflow; not fetched from the sandbox |
+| Documentation site | Last successful main deployment workflow observed at `3a7e762`; direct requests on 2026-10-31 returned HTTP 200 for the root and all seven linked chapters. An earlier request from this environment timed out. |
 | Release | Exists, source only, v1.0.0 |
-| CLI demonstration | Script and transcript from an actual run; no screen recording was made |
-| Test evidence | Historical local runs and their dates are recorded in [docs/verification.md](../docs/verification.md); current workflow results are shown on the pull request |
+| CLI demonstration | Script plus an actual release-binary transcript from clean source commit `1b31580`; older transcript retained separately as historical. No screen recording was made. |
+| Test evidence | Local checks on `1b31580` are summarized above and traced in [docs/verification.md](../docs/verification.md). Hosted Rust CI passed on that exact commit; the last main Documentation/deploy workflow is on `3a7e762`. |
 | Testnet evidence | Raw stdout/stderr and capture metadata for the fresh bounded CLI observation are linked in [the dated record](../research/testnet-live-observation-2026-10-31.md); the separate raw RPC response is earlier and does not establish the CLI header. No transaction was executed or exhaustive discovery or forced-redemption effect independently observed |
 | Slide deck, video, second repository | Do not exist |
-| Any program's own required materials | Unknown, because the programs' rules were not read |
+| Drips application materials | Public process documented; private account/org state and future Wave application availability require maintainer review in the Drips app |
+| GrantFox application materials | Required video pitch not prepared; assess the age/activity guideline and active Campaign rules before applying |
 
-## Open items
+## Maintainer actions before any application
 
-1. Merge this pull request (19), then fix the candidate commit and record it in the freeze record.
-2. Add `docs` as a required status check (administrator).
-3. Add repository topics (administrator): suggested `stellar`, `stellar-network`, `rust`, `cli`, `liquidity-pools`, `protocol-analysis`.
-4. Assess whether the retained bounded observation satisfies any specific program's evidence requirements; it is not a forced-redemption execution or proof of exhaustive discovery.
-5. Read the Drips and GrantFox official rules and record them.
-6. Decide whether to require an independent approval on `main`.
+1. Before merging a documentation PR, confirm `rust` and `docs` pass on its exact head. After merge, rerun the documented checks on the resulting `main` commit before freezing a candidate.
+2. The branch API verifies main protection and the required `rust`/`docs` checks. Review-approval requirements, force-push/deletion restrictions, bypass permissions, and other settings were not established here. Reviewer approvals are intentionally not required at this stage; no GitHub settings were changed.
+3. If considering Drips, use the maintainer's own Drips account to verify organization onboarding, repository listing/application state, application limits, and the next relevant Wave. The public page currently shows no active or upcoming Wave.
+4. If considering GrantFox, wait until the repository meets its published age/activity guideline, prepare the required pitch, and verify whether a suitable active Campaign is accepting projects. The OSS directory being public does not establish funded campaign participation.
+5. Keep the live evidence limitations visible. The October 31 capture is a bounded `UNVERIFIED_FORECAST`, not proof of exhaustive discovery or a forced-redemption execution.
+
+No maintainer account action, application, grant request, release, or program issue publication has been performed as part of this assessment.

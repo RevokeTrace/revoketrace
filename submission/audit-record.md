@@ -1,8 +1,12 @@
 # Final audit and freeze record (draft, not frozen)
 
-> **2026-10-31 evidence update:** The 20:16 PR #20 transcript from commit `963453caa98039477ef88897d8b9da017dd8c379` contained an issuer transcription mismatch and is withdrawn; its stdout was not retained as bytes. A fresh fixture-derived capture from commit `9a419ebf74194359db45b79fb274e58d29c4e4de` retained raw stdout/stderr and reported ledger 5491146, exit 10. The separate full RPC response retained at ledger 5490831/protocol 29 is an earlier observation, not the later CLI header. See [the dated record](../research/testnet-live-observation-2026-10-31.md). The findings below describe the original October 30 audit snapshot. The new capture does not freeze the submission or independently verify a forced-redemption execution.
+> **Current-state addendum, 2026-10-31:** This record's original findings are an October 30 snapshot. The latest reviewed `main` is `1b31580fc634343a62b278566b0b510c81ce241e`; PRs #1 through #20 are merged. Rust CI passed on that commit at [run 41242363654](https://github.com/RevokeTrace/revoketrace/actions/runs/41242363654). The latest successful main Documentation/deploy workflow observed is [run 41159173318](https://github.com/RevokeTrace/revoketrace/actions/runs/41159173318) at `3a7e762973cb4e3c3277e18fe0014037c437ca4e`. After an earlier timed-out request, direct HTTP checks returned 200 for the public documentation root and all seven linked chapters on 2026-10-31. The workflow job names are `rust` and `docs`. Repository topics are present. GitHub's private-vulnerability-reporting endpoint returned `enabled: true`. Current Drips and GrantFox status is in the [dated program-readiness report](../research/program-readiness-2026-10-31.md). This review made no program application; private account/application state was not inspected. The earlier branch API access problem is corrected in the governance update below.
 
-Prepared 2026-10-30. The review below was done by an agent working in a sandbox. It is not an independent third-party security audit or certification. Scope: source, security, repository, and external evidence for the pre-submission pass.
+> **Governance correction, 2026-11-01:** The earlier integration returned an empty visible ruleset list and HTTP 404 from `/branches/main/protection`. A subsequent successful [branch API response](https://api.github.com/repos/RevokeTrace/revoketrace/branches/main) for `main` at `1b31580fc634343a62b278566b0b510c81ce241e` reported `protected: true`, `protection.enabled: true`, and required status checks enforced for everyone with contexts `rust` and `docs`. Branch protection and both required checks are verified. This response does not establish review-approval requirements, force-push/deletion restrictions, bypass permissions, or other administrative settings. No repository settings were changed.
+
+The 20:16 PR #20 transcript from commit `963453caa98039477ef88897d8b9da017dd8c379` contained an issuer transcription mismatch and is withdrawn; its stdout was not retained as bytes. A fresh fixture-derived capture from commit `9a419ebf74194359db45b79fb274e58d29c4e4de` retained raw stdout/stderr and reported ledger 5491146, exit 10. The separate full RPC response retained at ledger 5490831/protocol 29 is an earlier observation, not the later CLI header. See [the dated record](../research/testnet-live-observation-2026-10-31.md). The new capture does not freeze the submission or independently verify a forced-redemption execution.
+
+Historical audit prepared 2026-10-30. It was done by an agent working in a sandbox. It is not an independent third-party security audit or certification. Scope: source, security, repository, and external evidence for the pre-submission pass. The findings below are retained for history; current repository, CI, program, and governance states are summarized in the addendum and readiness report.
 
 ## Findings
 
@@ -10,7 +14,7 @@ Classes: A blocker, B stale or cosmetic, C known limitation, D important pre-sub
 
 ### A: Blockers
 
-None confirmed in the implementation. Submission-level conditions that are outside the code (unverified program rules, this pull request not yet merged) are in the freeze record below.
+None confirmed in the implementation. Remaining external conditions are the unverified Drips account/repository state and GrantFox's repository age guideline and required pitch. This review made no program application. Branch protection and required CI checks are verified in the 2026-11-01 governance correction. See the dated readiness report for program status.
 
 ### D: Important pre-submission fixes
 
@@ -18,11 +22,11 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 | --- | --- | --- | --- |
 | D1 | Only a lower protocol bound was enforced, so an unreviewed newer protocol would be evaluated. | `src/evidence.rs`, `src/lib.rs` at `7326436`; [decision](../research/protocol-support-decision.md) | Fixed in PR 14, merged as `965b2c5`. Range 18 to 29. |
 | D2 | `inspect` printed a caller-supplied report under the same title and field names as a fresh forecast. A doctored `COMPLETE_AUTHORITATIVE_LEDGER` label looked authoritative. | `tests/inspect_cli.rs`, [transcript step 9](demo/transcript.txt) | Fixed in PR 15, merged as `5d2ef06`. Schema 1 unchanged. |
-| D3 | The documentation check was filtered by path, was not required by branch protection, and `mdbook build` exited 0 for a missing chapter or broken link. | GitHub branch API (required checks: `rust` only); local negative tests | Workflow fixed in PR 16, merged as `91cd30a`; `docs`, `deploy` and `rust` all passed on `main`. **Open:** `main` still requires only `rust` (branch API, 2026-10-30), so an administrator must add `docs`. |
+| D3 | The documentation check was filtered by path, was not required by branch protection, and `mdbook build` exited 0 for a missing chapter or broken link. | Historical GitHub API query and local negative tests | Workflow fixed in PR 16, merged as `91cd30a`. The earlier limited API requests did not establish current settings; the subsequent branch endpoint verifies that `rust` and `docs` are required (see 2026-11-01 correction). |
 | D4 | Live mode accepted `http://` for any host although the documentation says HTTPS. TLS is the only authenticity layer for provider responses. | `validate_endpoint` at `7326436`; `tests/live_cli.rs` | Fixed in PR 17, merged as `6ea854d`. |
-| D5 | `SECURITY.md` omitted supported versions, trust boundaries, resource bounds, dependency scanning, and audit status. | `SECURITY.md` at `7326436` | Fixed in PR 19 (this pull request). |
+| D5 | `SECURITY.md` omitted supported versions, trust boundaries, resource bounds, dependency scanning, and audit status. | `SECURITY.md` at `7326436` | Fixed in PR 19, merged by `3a7e762`. |
 | D6 | The CLI reference said credential-bearing endpoints are rejected. A secret in the URL path is accepted and recorded in the report. | Run of `live` with a path token; `ReportSource` fields | Documentation corrected. Behavior documented as a limitation. |
-| D7 | The repository has no topics. | GitHub API `topics` returned an empty list | **Open:** needs administrator access, which this session lacked. |
+| D7 | The repository had no topics. | GitHub API returned an empty list in the original audit | Superseded: repository topics were present in the GitHub API response on 2026-10-31. |
 | D8 | The live adapter decoded `headerXdr` before applying the protocol range, so a real protocol 30 header would have exited 50 instead of 30. Found in maintainer review, after the first version of PR 14. | Mutation check: removing the new pre-decode check makes `unsupported_rpc_protocol_is_refused_before_the_header_is_decoded` fail with `ParseError`; `tests/live_protocol_cli.rs` | Fixed in `d9e7fd4`, part of the merge of PR 14. |
 | D9 | The `curl` transport read `.curlrc`, relied on nothing in `curl` to enforce the protocol policy, could follow redirects through a configuration file, and noticed an HTTP error status only if its body failed to parse. Found in maintainer review. | `tests/curl_transport.rs`, including a control run that shows plain `curl` obeys a hostile `.curlrc`; removing `-q` makes the test fail | Fixed in `07d3572`, part of the merge of PR 17. |
 
@@ -34,7 +38,7 @@ None confirmed in the implementation. Submission-level conditions that are outsi
 - At the time of the October 30 audit, no live Testnet run had succeeded; that attempt was blocked by the sandbox network policy. A later bounded capture is recorded in the update above; it does not prove exhaustive discovery or a real forced redemption.
 - The range 18 to 29 remains a source-review boundary. The separately retained response reported protocol 29 at ledger 5490831, about 26 minutes before the fresh CLI capture at 5491146. It is not that capture's exact header and does not widen supported protocol behavior.
 - `--force` needs a trusted output directory. A killed process can leave a hidden temporary file.
-- `main` requires zero approvals, so a green CI run is the only enforced gate.
+- Earlier audit requests to dedicated branch-protection endpoints failed, but a subsequent branch API response verifies `main` protection and required `rust`/`docs` checks. That response does not establish review-approval requirements, force-push/deletion restrictions, or bypass permissions. The maintainer has stated that reviewer approvals are intentionally not required at this stage.
 - Offer-matching changes at protocol 29 are outside the model.
 
 ### E: Non-blocking backlog
@@ -72,28 +76,28 @@ Smart contracts, wallet integration, a backend or database, a second repository,
 
 ## Freeze record
 
-**Status: not frozen.** Submission cannot be declared ready while the items below are unresolved.
+**Status: not frozen.** The source candidate has been reviewed, but the documentation updates from this pass are not merged, program-specific account states remain private or unverified, and current branch protection was not confirmed.
 
 | Field | Value |
 | --- | --- |
-| Candidate commit | Not set. `main` was at `2c01428` when this record was updated, and this pull request (19) is not yet merged. The commit to submit must be recorded after it merges. |
-| Date | 2026-10-30 (draft) |
-| Git status of the working branch | Clean at the last commit of the evidence branch |
-| Merged pull requests relevant to this pass | 14 (protocol range), 15 (inspect labelling), 16 (documentation check), 17 (HTTPS endpoints and `curl` hardening), 18 (failure tests). All were merged by the GitHub account Hollujay, not by this review. 19 (this one) is open. |
-| Hosted CI | `main` at `91cd30a`: `deploy`, `docs`, `rust` successful. `main` at `6ea854d`: `rust` successful. `main` at `2c01428`: `rust` still running when this was written. Hosted CI for this pull request is recorded in its checks, not here. |
-| Documentation deployment | Hosted deploy succeeded on `main` at `91cd30a`, with the new workflow. The site itself was not fetched from the sandbox. |
+| Candidate commit assessed in this pass | `1b31580fc634343a62b278566b0b510c81ce241e`; not frozen. The final source commit must be recorded after any readiness PR is reviewed and merged. |
+| Date | 2026-10-31 current-state addendum; original audit dated 2026-10-30 |
+| Git status of source baseline | Clean at the verified `main` baseline before this documentation branch was created |
+| Merged pull requests relevant to the project state | PRs #1 through #20 merged on the verified baseline. The current readiness documentation change is separate and must be reviewed before merge. |
+| Hosted CI and branch protection | Rust CI passed on `main` at `1b31580` ([run 41242363654](https://github.com/RevokeTrace/revoketrace/actions/runs/41242363654)). Documentation/deploy last passed on `main` at `3a7e762` ([run 41159173318](https://github.com/RevokeTrace/revoketrace/actions/runs/41159173318)). A successful branch API response on 2026-11-01 verifies `main` is protected and requires `rust` and `docs`; see the governance correction above. Other protection settings remain unverified. |
+| Documentation deployment | The successful deployment workflow at `3a7e762` was observed. Direct HTTP checks returned 200 for the site root and all seven linked chapters on 2026-10-31. |
 | Release identity | v1.0.0, tag object `984eec70af723c30bfc26864ddf9ef31fe67378a`, commit `9b0e10121a4413d07e6323bd351a6ed4680279bb`, unchanged |
 | Verified evidence | See [docs/verification.md](../docs/verification.md) |
-| Historical local checks (2026-10-30) | fmt, 202 tests (181 unit, 21 binary-level), release build, Clippy, audit, rustdoc, mdBook 0.4.52, link check, `git diff --check` passed on the earlier evidence branch. These counts are not the result of this latest evidence correction. |
+| Local checks on `1b31580` (2026-10-31) | `cargo fmt --check`, `cargo test --locked` (202 tests), release build, strict Clippy, `cargo audit --deny warnings`, warning-denied rustdoc, mdBook 0.4.52, `scripts/check-doc-links.py`, and `git diff --check` passed. A clean-clone release-binary demonstration is preserved at [transcript-1b31580.txt](demo/transcript-1b31580.txt). |
 | Known limitations | See class C above |
-| Program eligibility | Drips NOT VERIFIED, GrantFox NOT VERIFIED |
+| Program status | Drips: **ELIGIBILITY NOT VERIFIED**. GrantFox OSS Contributions: **NOT READY TO APPLY** on the documented repository age guideline and missing required video pitch. This review made no application; private account status was not inspected. See [program readiness](../research/program-readiness-2026-10-31.md). |
 
-### Remaining blockers to a ready declaration
+### Current actions before a program application or final freeze
 
-1. This pull request (19) must pass hosted CI on its current head, be reviewed, and be merged.
-2. An administrator must require the `docs` check and add topics.
-3. Review the byte-preserved October 31 capture. It does not provide exhaustive discovery or an executed forced-redemption fixture; assess those limitations against any future program requirements.
-4. The Drips and GrantFox rules must be read from official sources.
-5. After 19 merges, the candidate commit must be recorded and the checks re-run on it, including the demonstration transcript.
+1. Before merging a documentation PR, verify `rust` and `docs` pass on its exact head. After merge, rerun the documented checks on the resulting `main` commit before freezing a candidate. Those contexts are verified as required on `main`; reviewer approvals are intentionally not required at this stage, and no settings were changed.
+2. Before freezing a submission candidate, record the final post-merge `main` SHA and rerun the locked checks and demo on that exact source.
+3. The maintainer must inspect Drips organization/repository/application state and current Wave availability in their own account if they choose to apply.
+4. Reassess GrantFox after meeting its public repository age/activity guideline, prepare the required video pitch, and check current Campaign eligibility. No application has been submitted.
+5. Preserve the bounded Testnet evidence limitations; it is not an executed forced-redemption result or transaction preflight.
 
 If a submission-critical defect is found after freeze, fix it, redo the affected checks, and repeat this audit.
